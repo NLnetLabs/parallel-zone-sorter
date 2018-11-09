@@ -1,13 +1,18 @@
 CC=gcc
 
-all: read-com.zone
+all: sort-zone rev-zone
 
-read-com.zone: read-com.zone.o
+rev-zone: rev-zone.o
 	$(CC) -o $@ $<
-	strip $@
 
-read-com.zone.o: read-com.zone.c
+rev-zone.o: rev-zone.c
+	$(CC) -Ofast -c $<
+
+sort-zone: sort-zone.o
+	$(CC) -o $@ $<
+
+sort-zone.o: sort-zone.c
 	$(CC) -Ofast -c $<
 
 clean:
-	rm -f read-com.zone read-com.zone.o
+	rm -f sort-zone sort-zone.o rev-zone rev-zone.o

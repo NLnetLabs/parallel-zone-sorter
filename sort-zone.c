@@ -6,6 +6,9 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+#include <ctype.h>  /* isdigit() */
+#include <stdlib.h> /* strtoul() */
 
 typedef struct rr_part {
 	const char *start;
@@ -34,7 +37,7 @@ typedef struct zone_iter {
 	unsigned int free : 1;
 } zone_iter;
 
-static int zone_iter_init(zone_iter *i, const char *fn)
+int zone_iter_init(zone_iter *i, const char *fn)
 {
 	struct stat statbuf;
 
@@ -220,7 +223,7 @@ static const char *p_zone_iter_get_part(zone_iter *i, size_t *olen)
 	}
 }
 
-static inline const char *zone_iter_next(zone_iter *i, size_t *olen)
+const char *zone_iter_next(zone_iter *i, size_t *olen)
 {
 	i->current_part = i->parts;
 	return p_zone_iter_get_part(i, olen);
@@ -270,94 +273,187 @@ static inline void print_rev(size_t sz, const char *name)
 	printf("%.*s", (int)o_sz, o_name);
 }
 
+typedef struct wf_labels {
+	uint8_t l[128][64];
+	size_t  n;
+} wf_labels;
+
+static inline int p_wf_labels_are_fqdn(wf_labels *labels)
+{ return labels->n != 0 && labels->l[labels->n - 1][0] == 0; }
+
+static inline void p_wf_labels_cpy(wf_labels *dst, wf_labels *src)
+{
+	memcpy(dst->l, src->l, src->n * sizeof(src->l[0]));
+	dst->n = src->n;
+}
+
+static inline int p_wf_labels_cat(wf_labels *dst, wf_labels *src)
+{
+	if (dst->n + src->n > 128)
+		return 0;
+
+	memcpy(dst->l + dst->n, src->l, src->n * sizeof(src->l[0]));
+	dst->n += src->n;
+	return 1;
+}
+
+static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
+{
+	for (labels->n = 0; len; labels->n++) {
+		uint8_t *pq = labels->l[labels->n], *q = pq + 1;
+
+		while (len && (q - pq < 64)) {
+			if (*dname == '.') {
+				*pq = (q - pq) - 1;
+				dname++; len--;
+				break;
+
+			} else if (*dname == '\\' && len >= 2) {
+				uint16_t val;
+				if (len >= 4
+				&&  isdigit(dname[1])
+				&&  isdigit(dname[2])
+				&&  isdigit(dname[3])) {
+					val = (dname[1] - '0') * 100
+					    + (dname[2] - '0') *  10
+					    + (dname[3] - '0');
+					*q++ = val;
+					dname += 4; len -= 4;
+				} else {
+					*q++ = dname[1];
+					dname += 2; len -= 2;
+				}
+			} else {
+				*q++ = *dname++;
+				len--;
+			}
+		}
+	}
+	return 1;
+}
+
+typedef struct zone_wf_iter {
+	zone_iter   zi;
+
+	size_t      rr_len;
+	const char *rr;
+
+	wf_labels   origin;
+	wf_labels   owner;
+	uint32_t    ttl;
+	size_t      nth;
+	rr_part    *rr_type_or_class_type;
+} zone_wf_iter;
+
+static inline uint32_t p_wf_parse_ttl(const char *str, size_t sz)
+{
+	char buf[11], *endptr;
+
+	assert(sz < sizeof(buf));
+	memcpy(buf, str, sz);
+	buf[sz] = 0;
+
+	return strtoul(buf, &endptr, 10);
+}
+
+static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
+{
+	rr_part *part = i->zi.parts;
+	ssize_t part_sz;
+	size_t n;
+	int r;
+
+	if (part->start > i->rr) {
+		/* Owner is previous owner */
+		i->nth += 1;
+
+	} else if ((part_sz = (part->end - part->start)) <= 0)
+		return i; /* EOF? */
+
+	else if (part->start[0] == '@' && part_sz == 1) {
+		/* Owner is origin */
+		i->nth = 0;
+		p_wf_labels_cpy(&i->owner, &i->origin);
+		part++;
+
+	} else if (part->start[0] != '$') {
+		/* Regular owner name */
+
+		i->nth = 0;
+		r = p_dname2wf(part->start, part_sz, &i->owner);
+		assert(r);
+		if (!p_wf_labels_are_fqdn(&i->owner)) {
+			r = p_wf_labels_cat(&i->owner, &i->origin);
+			assert(r);
+		}
+		part++;
+
+	} else if (part_sz == 7
+	       && strncasecmp(part->start, "$ORIGIN", 7) == 0) {
+		/* $ORIGIN */
+		part++;
+		r = p_dname2wf(part->start, part->end-part->start, &i->owner);
+		assert(r);
+		return i;
+
+	} else if (part_sz == 4 && strncasecmp(part->start, "$TTL", 4) == 0) {
+		/* $TTL */
+		part++;
+		i->ttl = p_wf_parse_ttl(part->start, part->end - part->start);
+		return i;
+	} else {
+		/* Other $ directive */
+		return i;
+	}
+	/* Skip class */
+	if (part->start && part->start[0] >= '0' && part->start[0] <= '9') {
+		/* TTL */
+		i->ttl = p_wf_parse_ttl(part->start, part->end - part->start);
+		part++;
+	}
+	i->rr_type_or_class_type = part;
+	return i;
+}
+
+zone_wf_iter *zone_wf_iter_init(
+    zone_wf_iter *i, const char *fn, const char *origin)
+{
+	if (zone_iter_init(&i->zi, fn) > 0)
+		return NULL;
+
+	if (!(i->rr = zone_iter_next(&i->zi, &i->rr_len)))
+		return NULL;
+
+	if (!p_dname2wf(origin, strlen(origin), &i->origin))
+		return NULL;
+
+	else if (!p_wf_labels_are_fqdn(&i->origin))
+		i->origin.l[i->origin.n++][0] = 0;
+
+	i->owner = i->origin;
+	i->ttl = 3600;
+	i->nth = 0;
+	return p_zone_wf_iter_process_rr(i);
+}
+
+zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
+{
+	if (!(i->rr = zone_iter_next(&i->zi, &i->rr_len)))
+		return NULL;
+	return p_zone_wf_iter_process_rr(i);
+}
+
 int main(int argc, char **argv)
 {
-	zone_iter i;
-	const char *ln;
-	size_t len;
-	size_t j = 0, k;
-
-	const char *origin = "";
-	int origin_sz = 0;
-	const char *owner = "";
-	int owner_sz = 0;
-	unsigned int owner_fqdn = 0;
-	const char *ttl = "";
-	int ttl_sz = 0;
+	zone_wf_iter zi_spc, *zi;
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
 		return 1;
 	}
-	if (argc == 3) {
-		origin = argv[2];
-		origin_sz = strlen(argv[2]);
-	}
-	if (zone_iter_init(&i, argv[1]))
-		perror("Could not initialized zone iterator fpr \"com.zone\"");
-
-	else while ((ln = zone_iter_next(&i, &len))) {
-		rr_part *part = i.parts;
-		ssize_t part_sz;
-
-		/* Owner is previous owner? */
-		if (part->start > ln) {
-			if (owner_fqdn)
-				print_rev(owner_sz, owner);
-			else {
-				print_rev(origin_sz, origin);
-				if (origin_sz && owner_sz) printf(".");
-				print_rev(owner_sz, owner);
-			}
-
-		} else if ((part_sz = (part->end - part->start)) <= 0)
-			continue;
-
-		else if (part->start[0] == '@' && part_sz == 1) {
-			print_rev(origin_sz, origin);
-			part++;
-
-		} else if (part->start[0] != '$') {
-			/* Owner name */
-			owner = part->start;
-			owner_sz = part_sz;
-			owner_fqdn = owner_sz && part->end[-1] == '.';
-
-			if (owner_fqdn)
-				print_rev(owner_sz, owner);
-			else {
-				print_rev(origin_sz, origin);
-				if (origin_sz && owner_sz) printf(".");
-				print_rev(owner_sz, owner);
-			}
-			part++;
-
-		} else if (part_sz == 7 && strncasecmp(part->start, "$ORIGIN", 7) == 0) {
-			part++;
-			origin = part->start;
-			origin_sz = part->end - part->start;
-			continue;
-		} else if (part_sz == 4 && strncasecmp(part->start, "$TTL", 4) == 0) {
-			part++;
-			ttl = part->start;
-			ttl_sz = part->end - part->start;
-			continue;
-		} else {
-			continue;
-		}
-		if ( part->start &&
-		    (part->start[0] > '9' || part->start[0] < '0') && ttl_sz)
-			printf(" %.*s", ttl_sz, ttl);
-
-		for (; part->start; part++) {
-			if (part->start[0] == '@' && part->end - part->start == 1)
-				printf(" %.*s", origin_sz, origin);
-			else
-				printf(" %.*s", (int)(part->end - part->start)
-				              , part->start);
-		}
-		printf("\n");
-		j++;
+	for ( zi = zone_wf_iter_init(&zi_spc, argv[1], argc == 3 ? argv[2] : "")
+	    ; zi ; zi = zone_wf_iter_next(zi)) {
+		; /* pass */
 	}
 	return 0;
 }
