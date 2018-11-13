@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <ctype.h>  /* isdigit() */
 #include <stdlib.h> /* strtoul() */
+#include <time.h>
 
 typedef struct rr_part {
 	const char *start;
@@ -299,13 +300,12 @@ static inline int p_wf_labels_cat(wf_labels *dst, wf_labels *src)
 
 static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
 {
+	// printf("p_dname2wf(%.*s)\n", (int)len, dname);
 	for (labels->n = 0; len; labels->n++) {
 		uint8_t *pq = labels->l[labels->n], *q = pq + 1;
 
 		while (len && (q - pq < 64)) {
 			if (*dname == '.') {
-				*pq = (q - pq) - 1;
-				dname++; len--;
 				break;
 
 			} else if (*dname == '\\' && len >= 2) {
@@ -328,6 +328,13 @@ static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
 				len--;
 			}
 		}
+		*pq = (q - pq) - 1;
+		if (len) {
+			// assert(*dname == '.');
+			dname++; len--;
+			if (len == 0)
+				labels->l[++labels->n][0] = 0;
+		}
 	}
 	return 1;
 }
@@ -340,10 +347,44 @@ typedef struct zone_wf_iter {
 
 	wf_labels   origin;
 	wf_labels   owner;
+	uint32_t    orig_ttl;
 	uint32_t    ttl;
-	size_t      nth;
 	rr_part    *rr_type_or_class_type;
 } zone_wf_iter;
+
+void debug_wf_iter(zone_wf_iter *zi)
+{
+	size_t i;
+	char dname[1024], *d = dname, *dend = dname + sizeof(dname);
+
+	for (i = 0; i < zi->owner.n; i++) {
+		size_t j;
+
+		for (j = 0; j < zi->owner.l[i][0]; j++) {
+			unsigned char c = zi->owner.l[i][j+1];
+
+			if (c == '.' || c == ';'
+			||  c == '(' ||  c == ')' || c == '\\') {
+				*d++ = '\\';
+				*d++ = c;
+			} else if (!(isascii(c) && isgraph(c))) {
+				*d++ = '\\';
+				*d++ = '0' + (c / 100);
+				*d++ = '0' + (c % 100 / 10);
+				*d++ = '0' + (c % 10);
+			} else
+				*d++ = c;
+		}
+		if (j)
+			*d++ = '.';
+	}
+	*d++ = 0;
+	printf( "%6d %s[-%d:]\t%.*s\n", (int)zi->ttl, dname
+	      , (int)zi->origin.n
+	      , (int)( zi->rr_type_or_class_type->end
+	             - zi->rr_type_or_class_type->start)
+	      , zi->rr_type_or_class_type->start);
+}
 
 static inline uint32_t p_wf_parse_ttl(const char *str, size_t sz)
 {
@@ -356,6 +397,7 @@ static inline uint32_t p_wf_parse_ttl(const char *str, size_t sz)
 	return strtoul(buf, &endptr, 10);
 }
 
+zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i);
 static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 {
 	rr_part *part = i->zi.parts;
@@ -364,22 +406,19 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 	int r;
 
 	if (part->start > i->rr) {
-		/* Owner is previous owner */
-		i->nth += 1;
+		; /* pass: Owner is previous owner */
 
 	} else if ((part_sz = (part->end - part->start)) <= 0)
-		return i; /* EOF? */
+		return zone_wf_iter_next(i); /* Empty line? */
 
 	else if (part->start[0] == '@' && part_sz == 1) {
 		/* Owner is origin */
-		i->nth = 0;
 		p_wf_labels_cpy(&i->owner, &i->origin);
 		part++;
 
 	} else if (part->start[0] != '$') {
 		/* Regular owner name */
 
-		i->nth = 0;
 		r = p_dname2wf(part->start, part_sz, &i->owner);
 		assert(r);
 		if (!p_wf_labels_are_fqdn(&i->owner)) {
@@ -392,25 +431,26 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 	       && strncasecmp(part->start, "$ORIGIN", 7) == 0) {
 		/* $ORIGIN */
 		part++;
-		r = p_dname2wf(part->start, part->end-part->start, &i->owner);
+		r = p_dname2wf(part->start, part->end-part->start, &i->origin);
 		assert(r);
-		return i;
+		return zone_wf_iter_next(i);
 
 	} else if (part_sz == 4 && strncasecmp(part->start, "$TTL", 4) == 0) {
 		/* $TTL */
 		part++;
-		i->ttl = p_wf_parse_ttl(part->start, part->end - part->start);
-		return i;
+		i->orig_ttl = p_wf_parse_ttl(part->start, part->end - part->start);
+		return zone_wf_iter_next(i);
 	} else {
 		/* Other $ directive */
-		return i;
+		return zone_wf_iter_next(i);
 	}
 	/* Skip class */
 	if (part->start && part->start[0] >= '0' && part->start[0] <= '9') {
 		/* TTL */
 		i->ttl = p_wf_parse_ttl(part->start, part->end - part->start);
 		part++;
-	}
+	} else
+		i->ttl = i->orig_ttl;
 	i->rr_type_or_class_type = part;
 	return i;
 }
@@ -431,8 +471,7 @@ zone_wf_iter *zone_wf_iter_init(
 		i->origin.l[i->origin.n++][0] = 0;
 
 	i->owner = i->origin;
-	i->ttl = 3600;
-	i->nth = 0;
+	i->orig_ttl = 3600;
 	return p_zone_wf_iter_process_rr(i);
 }
 
@@ -443,17 +482,135 @@ zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
 	return p_zone_wf_iter_process_rr(i);
 }
 
+#if 0
+# define DEBUG_WF_ITER(zi) debug_wf_iter(zi)
+#else
+# define DEBUG_WF_ITER(zi)
+#endif
+
+typedef struct wf_dname_ref {
+	const char *start;
+	uint32_t ttl;
+	uint16_t sz;
+	uint8_t orig;
+	uint8_t dname[];
+} wf_dname_ref;
+
+static int p_wf_dname_cmp(const void *A, const void *B)
+{
+	const wf_dname_ref *a = *(wf_dname_ref * const *)A;
+	const wf_dname_ref *b = *(wf_dname_ref * const *)B;
+	const uint8_t *l, *r;
+	uint8_t lsz, rsz;
+
+	for (l = a->dname, r = b->dname; *l;) {
+		if (!*r)
+			return 1;
+		for (lsz = *l++, rsz = *r++; lsz; l++, r++, lsz--, rsz--) {
+			if (!rsz)
+				return 1;
+			if (*l != *r) {
+				if (*l < *r)
+					return -1;
+				return 1;
+			}
+		}
+		if (rsz)
+			return -1;
+	}
+	if (*r)
+		return -1;
+	return a->start < b->start ? -1 : a->start > b->start ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	zone_wf_iter zi_spc, *zi;
+	uint8_t       *mem = NULL;
+	uint8_t       *end = NULL;
+	uint8_t       *cur = NULL;
+	wf_dname_ref **refs = NULL, **ref, **r;
+	uint8_t    *ref_mem = NULL;
+	uint8_t    *ref_end = NULL;
+	uint8_t    *ref_cur = NULL;
+	time_t          now = time(NULL);
+	size_t     pagesize = 0;
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
 		return 1;
 	}
-	for ( zi = zone_wf_iter_init(&zi_spc, argv[1], argc == 3 ? argv[2] : "")
-	    ; zi ; zi = zone_wf_iter_next(zi)) {
-		; /* pass */
+	if ((zi = zone_wf_iter_init(&zi_spc, argv[1], argc == 3 ? argv[2] : ""))) {
+		cur = mem = mmap( NULL, (zi->zi.end - zi->zi.text) * 2 
+		                , (PROT_READ|PROT_WRITE)
+			        , (MAP_PRIVATE|MAP_ANONYMOUS), -1, 0);
+		assert(mem != MAP_FAILED);
+		ref = refs = mmap( NULL, (zi->zi.end - zi->zi.text) / 4
+		                 , (PROT_READ|PROT_WRITE)
+		                 , (MAP_PRIVATE|MAP_ANONYMOUS), -1, 0);
+		ref_mem = (void *)refs;
+		ref_end = ref_mem + ((zi->zi.end - zi->zi.text) / 4);
+		assert(refs != MAP_FAILED);
+		pagesize = zi->zi.pagesize;
+	} else
+		return 1;
+	while (zi) {
+		ssize_t n;
+		uint8_t *dname;
+
+		DEBUG_WF_ITER(zi);
+
+		(*ref)        = (void *)cur;
+		/*
+		(*ref)->start =  zi->rr_type_or_class_type->start;
+		(*ref)->sz    =  zi->rr_len
+		              - (zi->rr_type_or_class_type->start - zi->rr);
+		*/
+		(*ref)->start =  zi->rr;
+		(*ref)->sz    =  zi->rr_len;
+		(*ref)->ttl   =  zi->ttl;
+		dname = (*ref)->dname;
+
+		for (n = (ssize_t)zi->owner.n - 2; n >= 0; n--) {
+			memcpy(dname, zi->owner.l[n], zi->owner.l[n][0] + 1);
+			dname += zi->owner.l[n][0] + 1;
+		}
+		*dname++ = 0;
+		cur = dname;
+		ref += 1;
+		zi = zone_wf_iter_next(zi);
 	}
+	uint8_t *to_free = mem + (cur - mem) / pagesize * pagesize;
+	if (to_free < cur) to_free += pagesize;
+	assert(to_free > cur);
+	if (to_free < end) {
+		fprintf(stderr, "Freeing %d/%d bytes from wf_dname_ref mem\n"
+		              , (int)(end - to_free), (int)(end - mem));
+		munmap(to_free, end - to_free);
+	}
+	ref_cur = (void *)ref;
+	to_free = ref_mem + (ref_cur - ref_mem) / pagesize * pagesize;
+	if (to_free < ref_cur) to_free += pagesize;
+	assert(to_free > ref_cur);
+	if (to_free < ref_end) {
+		fprintf(stderr, "Freeing %d/%d bytes from wf_dname_ref refs\n"
+		              , (int)(ref_end - to_free), (int)(ref_end - ref_mem));
+		munmap(to_free, ref_end - to_free);
+	}
+#if 1
+	fprintf(stderr, "Freeing original zone at %d\n"
+	       , (int)(time(NULL) - now));
+	munmap(zi_spc.zi.to_free, (zi_spc.zi.end - zi_spc.zi.to_free));
+	fprintf(stderr, "Start sorting %d RRs at %d\n", (int)(ref - refs)
+	       , (int)(time(NULL) - now));
+	qsort(refs, ref - refs, sizeof(*refs), p_wf_dname_cmp);
+#else
+	qsort(refs, ref - refs, sizeof(*refs), p_wf_dname_cmp);
+	fprintf(stderr, "Printing zone at %d\n", (int)(time(NULL) - now));
+	for (r = refs; r < ref; r++) {
+		printf("%.*s\n", (int)(*r)->sz, (*r)->start);
+	}
+#endif
+	fprintf(stderr, "Done at %d\n", (int)(time(NULL) - now));
 	return 0;
 }
