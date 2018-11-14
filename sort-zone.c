@@ -705,10 +705,10 @@ int main(int argc, char **argv)
 
 			munmap(to_free, n * pagesize);
 			to_free += n * pagesize;
-		}
-		if ((to_free - out) * 100 / (out_end - out) > s) {
-			s = (to_free - out) * 100 / (out_end - out);
-			fprintf(stderr, "Savine %d%% done at %d\n", s, (int)(time(NULL) - now));
+			if ((to_free - out) * 100 / (out_end - out) > s) {
+				s = (to_free - out) * 100 / (out_end - out);
+				fprintf(stderr, "Saving %d%% done at %d\n", s, (int)(time(NULL) - now));
+			}
 		}
 	}
 	if (ftruncate64(fd, cur - out))
