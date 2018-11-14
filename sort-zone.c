@@ -643,8 +643,8 @@ int main(int argc, char **argv)
 	if (to_free < cur) to_free += pagesize;
 	assert(to_free > cur);
 	if (to_free < end) {
-		fprintf(stderr, "Freeing %d/%d bytes from wf_dname_ref mem\n"
-		              , (int)(end - to_free), (int)(end - mem));
+		fprintf(stderr, "Freeing %zu/%zu bytes from wf_dname_ref mem\n"
+		              , (size_t)(end - to_free), (size_t)(end - mem));
 		munmap(to_free, end - to_free);
 	}
 	ref_cur = (void *)ref;
@@ -652,18 +652,21 @@ int main(int argc, char **argv)
 	if (to_free < ref_cur) to_free += pagesize;
 	assert(to_free > ref_cur);
 	if (to_free < ref_end) {
-		fprintf(stderr, "Freeing %d/%d bytes from wf_dname_ref refs\n"
-		              , (int)(ref_end - to_free), (int)(ref_end - ref_mem));
+		fprintf(stderr, "Freeing %zu/%zu bytes from wf_dname_ref refs\n"
+		              , (size_t)(ref_end - to_free)
+			      , (size_t)(ref_end - ref_mem));
 		munmap(to_free, ref_end - to_free);
 	}
 #if 0
 	fprintf(stderr, "Freeing original zone at %d\n"
 	       , (int)(time(NULL) - now));
 	munmap(zi_spc.zi.to_free, (zi_spc.zi.end - zi_spc.zi.to_free));
-	fprintf(stderr, "Start sorting %d RRs at %d\n", (int)(ref - refs)
+	fprintf(stderr, "Start sorting %zu RRs at %d\n", (size_t)(ref - refs)
 	       , (int)(time(NULL) - now));
 	p_qsort(refs, 0, (ref - refs) - 1);
 #else
+	fprintf(stderr, "Start sorting %zu RRs at %d\n", (size_t)(ref - refs)
+	       , (int)(time(NULL) - now));
 	p_qsort(refs, 0, (ref - refs) - 1);
 	fprintf(stderr, "Printing zone at %d\n", (int)(time(NULL) - now));
 	for (r = refs; r < ref; r++) {
