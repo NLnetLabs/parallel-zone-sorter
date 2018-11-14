@@ -9,7 +9,7 @@ rev-zone.o: rev-zone.c
 	$(CC) -Ofast -c $<
 
 sort-zone: sort-zone.o
-	$(CC) -o $@ $<
+	$(CC) -o $@ $< -lpthread
 
 sort-zone.o: sort-zone.c
 	$(CC) -Ofast -c $<

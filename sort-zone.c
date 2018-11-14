@@ -10,6 +10,9 @@
 #include <ctype.h>  /* isdigit() */
 #include <stdlib.h> /* strtoul() */
 #include <time.h>
+#include <pthread.h>
+
+#define THREAD_THRESHOLD 8192
 
 typedef struct rr_part {
 	const char *start;
@@ -523,6 +526,62 @@ static int p_wf_dname_cmp(const void *A, const void *B)
 	return a->start < b->start ? -1 : a->start > b->start ? 1 : 0;
 }
 
+typedef struct p_qsort_args {
+	wf_dname_ref **arr;
+	uint64_t left;
+	uint64_t right;
+} p_qsort_args;
+static void p_qsort(wf_dname_ref **arr, uint64_t left, uint64_t right);
+static void *p_qsort_start(void *args)
+{
+	p_qsort_args *a = (p_qsort_args *)args;
+	p_qsort(a->arr, a->left, a->right);
+	return NULL;
+}
+static inline void p_swap(wf_dname_ref **arr, uint64_t i, uint64_t j)
+{
+	wf_dname_ref **a = arr + i;
+	wf_dname_ref **b = arr + j;
+	wf_dname_ref *tmp;
+
+	tmp = *a;
+	*a = *b;
+	*b = tmp;
+}
+static inline uint64_t p_average2(uint64_t a, uint64_t b)
+{ return ((a ^ b) >> 1) + (a & b); }
+static void p_qsort(wf_dname_ref **arr, uint64_t left, uint64_t right)
+{
+	uint64_t i, last;
+	pthread_t lt;
+	p_qsort_args qa;
+
+	if (left >= right)
+		return;
+	p_swap(arr, left, p_average2(left, right));
+	last = left;
+	for (i = left + 1; i <= right; i++) {
+		if (p_wf_dname_cmp(arr + i, arr + left) < 0) {
+			last++;
+			p_swap(arr, last, i);
+		}
+	}
+	p_swap(arr, left, last);
+	if (right - left > THREAD_THRESHOLD) {
+		qa.arr   = arr;
+		qa.left  = left;
+		qa.right = last - 1;
+		if (!pthread_create( &lt, PTHREAD_CREATE_JOINABLE
+		                   , p_qsort_start, (void*)&qa)) {
+			p_qsort(arr, last + 1, right);
+			pthread_join(lt, NULL);
+			return;
+		}
+	}
+	p_qsort(arr, left    , last - 1);
+	p_qsort(arr, last + 1, right   );
+}
+
 int main(int argc, char **argv)
 {
 	zone_wf_iter zi_spc, *zi;
@@ -597,15 +656,15 @@ int main(int argc, char **argv)
 		              , (int)(ref_end - to_free), (int)(ref_end - ref_mem));
 		munmap(to_free, ref_end - to_free);
 	}
-#if 1
+#if 0
 	fprintf(stderr, "Freeing original zone at %d\n"
 	       , (int)(time(NULL) - now));
 	munmap(zi_spc.zi.to_free, (zi_spc.zi.end - zi_spc.zi.to_free));
 	fprintf(stderr, "Start sorting %d RRs at %d\n", (int)(ref - refs)
 	       , (int)(time(NULL) - now));
-	qsort(refs, ref - refs, sizeof(*refs), p_wf_dname_cmp);
+	p_qsort(refs, 0, (ref - refs) - 1);
 #else
-	qsort(refs, ref - refs, sizeof(*refs), p_wf_dname_cmp);
+	p_qsort(refs, 0, (ref - refs) - 1);
 	fprintf(stderr, "Printing zone at %d\n", (int)(time(NULL) - now));
 	for (r = refs; r < ref; r++) {
 		printf("%.*s\n", (int)(*r)->sz, (*r)->start);
