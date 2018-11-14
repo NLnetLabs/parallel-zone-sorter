@@ -1,3 +1,4 @@
+#define _LARGEFILE64_SOURCE
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -499,7 +500,7 @@ typedef struct wf_dname_ref {
 	uint8_t dname[];
 } wf_dname_ref;
 
-static int p_wf_dname_cmp(const void *A, const void *B)
+static inline int p_wf_dname_cmp(const void *A, const void *B)
 {
 	const wf_dname_ref *a = *(wf_dname_ref * const *)A;
 	const wf_dname_ref *b = *(wf_dname_ref * const *)B;
@@ -508,22 +509,23 @@ static int p_wf_dname_cmp(const void *A, const void *B)
 
 	for (l = a->dname, r = b->dname; *l;) {
 		if (!*r)
-			return 1;
+			return 0;
 		for (lsz = *l++, rsz = *r++; lsz; l++, r++, lsz--, rsz--) {
 			if (!rsz)
-				return 1;
+				return 0;
 			if (*l != *r) {
 				if (*l < *r)
-					return -1;
-				return 1;
+					return 1;
+				return 0;
 			}
 		}
 		if (rsz)
-			return -1;
+			return 1;
 	}
 	if (*r)
-		return -1;
-	return a->start < b->start ? -1 : a->start > b->start ? 1 : 0;
+		return 1;
+	/* Equal names */
+	return a->start < b->start ? 1 : /* a->start > b->start ? 1 : 0 */ 0;
 }
 
 typedef struct p_qsort_args {
@@ -561,7 +563,7 @@ static void p_qsort(wf_dname_ref **arr, uint64_t left, uint64_t right)
 	p_swap(arr, left, p_average2(left, right));
 	last = left;
 	for (i = left + 1; i <= right; i++) {
-		if (p_wf_dname_cmp(arr + i, arr + left) < 0) {
+		if (p_wf_dname_cmp(arr + i, arr + left)) {
 			last++;
 			p_swap(arr, last, i);
 		}
@@ -585,15 +587,19 @@ static void p_qsort(wf_dname_ref **arr, uint64_t left, uint64_t right)
 int main(int argc, char **argv)
 {
 	zone_wf_iter zi_spc, *zi;
-	uint8_t       *mem = NULL;
-	uint8_t       *end = NULL;
-	uint8_t       *cur = NULL;
+	uint8_t        *mem = NULL;
+	uint8_t        *end = NULL;
+	uint8_t        *cur = NULL;
 	wf_dname_ref **refs = NULL, **ref, **r;
 	uint8_t    *ref_mem = NULL;
 	uint8_t    *ref_end = NULL;
 	uint8_t    *ref_cur = NULL;
 	time_t          now = time(NULL);
 	size_t     pagesize = 0;
+	char          outfn[4096];
+	int           s, fd;
+	uint8_t        *out = NULL;
+	uint8_t    *out_end = NULL;
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
@@ -603,6 +609,7 @@ int main(int argc, char **argv)
 		cur = mem = mmap( NULL, (zi->zi.end - zi->zi.text) * 2 
 		                , (PROT_READ|PROT_WRITE)
 			        , (MAP_PRIVATE|MAP_ANONYMOUS), -1, 0);
+		end = mem + (zi->zi.end - zi->zi.text) * 2;
 		assert(mem != MAP_FAILED);
 		ref = refs = mmap( NULL, (zi->zi.end - zi->zi.text) / 4
 		                 , (PROT_READ|PROT_WRITE)
@@ -668,10 +675,50 @@ int main(int argc, char **argv)
 	fprintf(stderr, "Start sorting %zu RRs at %d\n", (size_t)(ref - refs)
 	       , (int)(time(NULL) - now));
 	p_qsort(refs, 0, (ref - refs) - 1);
-	fprintf(stderr, "Printing zone at %d\n", (int)(time(NULL) - now));
+	fprintf(stderr, "Saving zone at %d\n", (int)(time(NULL) - now));
+
+	s = snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
+	assert(s < sizeof(outfn));
+	if ((fd = open(outfn, O_CREAT|O_RDWR|O_TRUNC|O_LARGEFILE, 0644)) < 0)
+		perror("Could not open sorted output file");
+	if (ftruncate64(fd, (zi_spc.zi.end - zi_spc.zi.text)) < 0)
+		perror("Growing output file");
+	fprintf(stderr, "Truncating done at %d\n", (int)(time(NULL) - now));
+/*
+	lseek64(fd, (zi_spc.zi.end - zi_spc.zi.text), SEEK_SET);
+	if (write(fd, "", 1) < 0)
+		perror("Writing to output file");
+	lseek64(fd, 0, SEEK_SET);
+	*/
+	to_free = cur = out = mmap(NULL, (zi_spc.zi.end - zi_spc.zi.text)
+	                               , PROT_WRITE
+	                               , MAP_SHARED, fd, 0);
+	assert(out != NULL && out != MAP_FAILED);
+	out_end = out + (zi_spc.zi.end - zi_spc.zi.text);
+	s = 0;
+	for (r = refs; r < ref; r++) {
+		memcpy(cur, (*r)->start, (*r)->sz);
+		cur += (*r)->sz;
+		*cur++ = '\n';
+		if ((cur - to_free) > pagesize) {
+			size_t n = (cur - to_free) / pagesize;
+
+			munmap(to_free, n * pagesize);
+			to_free += n * pagesize;
+		}
+		if ((to_free - out) * 100 / (out_end - out) > s) {
+			s = (to_free - out) * 100 / (out_end - out);
+			fprintf(stderr, "Savine %d%% done at %d\n", s, (int)(time(NULL) - now));
+		}
+	}
+	if (ftruncate64(fd, cur - out))
+		perror("Truncating output file");
+	close(fd);
+	/*
 	for (r = refs; r < ref; r++) {
 		printf("%.*s\n", (int)(*r)->sz, (*r)->start);
 	}
+	*/
 #endif
 	fprintf(stderr, "Done at %d\n", (int)(time(NULL) - now));
 	return 0;
