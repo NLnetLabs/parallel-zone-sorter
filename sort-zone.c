@@ -64,7 +64,7 @@ int zone_iter_init(zone_iter *i, const char *fn)
 	i->count = 0;
 	i->parts = i->parts_spc;
 	i->parts_sz = sizeof(*i->parts_spc);
-	i->free = 0;
+	i->free = 1;
 	return 0;
 }
 
@@ -493,10 +493,10 @@ zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
 #endif
 
 typedef struct wf_dname_ref {
-	const char *start;
 	uint32_t ttl;
-	uint16_t sz;
-	uint8_t orig;
+	uint16_t txt_sz;
+	uint8_t origin_pos;
+	uint8_t dname_sz;
 	uint8_t dname[];
 } wf_dname_ref;
 
@@ -525,7 +525,7 @@ static inline int p_wf_dname_cmp(const void *A, const void *B)
 	if (*r)
 		return 1;
 	/* Equal names */
-	return a->start < b->start ? 1 : /* a->start > b->start ? 1 : 0 */ 0;
+	return a < b ? 1 : /* a->start > b->start ? 1 : 0 */ 0;
 }
 
 typedef struct p_qsort_args {
@@ -626,15 +626,15 @@ int main(int argc, char **argv)
 
 		DEBUG_WF_ITER(zi);
 
-		(*ref)        = (void *)cur;
+		(*ref)         = (void *)cur;
+		(*ref)->txt_sz =  zi->rr_len
+		               - (zi->rr_type_or_class_type->start - zi->rr);
+		// (*ref)->ttl    =  zi->ttl;
 		/*
 		(*ref)->start =  zi->rr_type_or_class_type->start;
 		(*ref)->sz    =  zi->rr_len
 		              - (zi->rr_type_or_class_type->start - zi->rr);
 		*/
-		(*ref)->start =  zi->rr;
-		(*ref)->sz    =  zi->rr_len;
-		(*ref)->ttl   =  zi->ttl;
 		dname = (*ref)->dname;
 
 		for (n = (ssize_t)zi->owner.n - 2; n >= 0; n--) {
@@ -642,7 +642,12 @@ int main(int argc, char **argv)
 			dname += zi->owner.l[n][0] + 1;
 		}
 		*dname++ = 0;
+		(*ref)->dname_sz = dname - (*ref)->dname;
 		cur = dname;
+		//memcpy(cur, zi->rr, zi->rr_len);
+		memcpy(cur, zi->rr_type_or_class_type->start, (*ref)->txt_sz);
+		cur += (*ref)->txt_sz;
+		assert((*ref)->dname + (*ref)->dname_sz + (*ref)->txt_sz == cur);
 		ref += 1;
 		zi = zone_wf_iter_next(zi);
 	}
@@ -664,14 +669,6 @@ int main(int argc, char **argv)
 			      , (size_t)(ref_end - ref_mem));
 		munmap(to_free, ref_end - to_free);
 	}
-#if 0
-	fprintf(stderr, "Freeing original zone at %d\n"
-	       , (int)(time(NULL) - now));
-	munmap(zi_spc.zi.to_free, (zi_spc.zi.end - zi_spc.zi.to_free));
-	fprintf(stderr, "Start sorting %zu RRs at %d\n", (size_t)(ref - refs)
-	       , (int)(time(NULL) - now));
-	p_qsort(refs, 0, (ref - refs) - 1);
-#else
 	fprintf(stderr, "Start sorting %zu RRs at %d\n", (size_t)(ref - refs)
 	       , (int)(time(NULL) - now));
 	p_qsort(refs, 0, (ref - refs) - 1);
@@ -679,17 +676,13 @@ int main(int argc, char **argv)
 
 	s = snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
 	assert(s < sizeof(outfn));
+
+#if 1
 	if ((fd = open(outfn, O_CREAT|O_RDWR|O_TRUNC|O_LARGEFILE, 0644)) < 0)
 		perror("Could not open sorted output file");
 	if (ftruncate64(fd, (zi_spc.zi.end - zi_spc.zi.text)) < 0)
 		perror("Growing output file");
 	fprintf(stderr, "Truncating done at %d\n", (int)(time(NULL) - now));
-/*
-	lseek64(fd, (zi_spc.zi.end - zi_spc.zi.text), SEEK_SET);
-	if (write(fd, "", 1) < 0)
-		perror("Writing to output file");
-	lseek64(fd, 0, SEEK_SET);
-	*/
 	to_free = cur = out = mmap(NULL, (zi_spc.zi.end - zi_spc.zi.text)
 	                               , PROT_WRITE
 	                               , MAP_SHARED, fd, 0);
@@ -697,8 +690,10 @@ int main(int argc, char **argv)
 	out_end = out + (zi_spc.zi.end - zi_spc.zi.text);
 	s = 0;
 	for (r = refs; r < ref; r++) {
-		memcpy(cur, (*r)->start, (*r)->sz);
-		cur += (*r)->sz;
+		// memcpy(cur, (*r)->start, (*r)->sz);
+		// TODO memcpy something else
+		memcpy(cur, (*r)->dname + (*r)->dname_sz, (*r)->txt_sz);
+		cur += (*r)->txt_sz;
 		*cur++ = '\n';
 		if ((cur - to_free) > pagesize) {
 			size_t n = (cur - to_free) / pagesize;
