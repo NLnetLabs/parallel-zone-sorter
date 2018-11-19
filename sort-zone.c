@@ -14,6 +14,10 @@
 #include <pthread.h>
 
 #define THREAD_THRESHOLD 8192
+#define SPLIT_SIZE 2145000000
+
+static long pagesize;
+static time_t start_t = 0;
 
 typedef struct rr_part {
 	const char *start;
@@ -24,7 +28,6 @@ typedef struct rr_part {
 } rr_part;
 
 typedef struct zone_iter {
-	long        pagesize;
 	int         fd;
 	char       *to_free;
 	const char *text;
@@ -58,7 +61,6 @@ int zone_iter_init(zone_iter *i, const char *fn)
 		close(i->fd);
 		return -1;
 	}
-	i->pagesize = sysconf(_SC_PAGESIZE);
 	i->line = i->cur = i->text = i->to_free;
 	i->end = i->text + statbuf.st_size;
 	i->count = 0;
@@ -76,11 +78,11 @@ static inline const char *p_zone_iter_return(zone_iter *i, size_t *olen)
 	*olen = i->cur - r;
 	i->count += 1;
 	i->line = ++i->cur;
-	if (i->free && (r - i->to_free) > i->pagesize) {
-		size_t n = (r - i->to_free) / i->pagesize;
+	if (i->free && (r - i->to_free) > pagesize) {
+		size_t n = (r - i->to_free) / pagesize;
 
-		munmap(i->to_free, n * i->pagesize);
-		i->to_free += n * i->pagesize;
+		munmap(i->to_free, n * pagesize);
+		i->to_free += n * pagesize;
 	}
 	if (i->current_part == i->parts)
 		return p_zone_iter_get_part(i, olen);
@@ -495,9 +497,9 @@ zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
 typedef struct wf_dname_ref {
 	uint32_t ttl;
 	uint16_t txt_sz;
-	uint8_t origin_pos;
-	uint8_t dname_sz;
-	uint8_t dname[];
+	uint8_t  origin_pos;
+	uint8_t  dname_sz;
+	uint8_t  dname[];
 } wf_dname_ref;
 
 static inline int p_wf_dname_cmp(const void *A, const void *B)
@@ -530,10 +532,10 @@ static inline int p_wf_dname_cmp(const void *A, const void *B)
 
 typedef struct p_qsort_args {
 	wf_dname_ref **arr;
-	uint64_t left;
-	uint64_t right;
+	int64_t        left;
+	int64_t        right;
 } p_qsort_args;
-static void p_qsort(wf_dname_ref **arr, uint64_t left, uint64_t right);
+static void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right);
 static void *p_qsort_start(void *args)
 {
 	p_qsort_args *a = (p_qsort_args *)args;
@@ -552,9 +554,9 @@ static inline void p_swap(wf_dname_ref **arr, uint64_t i, uint64_t j)
 }
 static inline uint64_t p_average2(uint64_t a, uint64_t b)
 { return ((a ^ b) >> 1) + (a & b); }
-static void p_qsort(wf_dname_ref **arr, uint64_t left, uint64_t right)
+static void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right)
 {
-	uint64_t i, last;
+	int64_t i, last;
 	pthread_t lt;
 	p_qsort_args qa;
 
@@ -584,137 +586,269 @@ static void p_qsort(wf_dname_ref **arr, uint64_t left, uint64_t right)
 	p_qsort(arr, last + 1, right   );
 }
 
+typedef struct p_merger p_merger;
+typedef void (*p_merger_nexter)(p_merger *m);
+struct p_merger {
+	wf_dname_ref   *cur;
+	p_merger_nexter next;
+};
+
+typedef struct p_combine {
+	p_merger  m;
+	p_merger *a;
+	p_merger *b;
+} p_combine;
+
+static void p_merger_next(p_merger *m)
+{
+	p_combine *c = (p_combine *)m;
+
+	if (c->m.cur == c->a->cur)
+		c->a->next(c->a);
+	else {
+		assert(c->m.cur = c->b->cur);
+		c->b->next(c->b);
+	}
+	c->m.cur = c->a->cur == NULL ? (c->b->cur ? c->b->cur : NULL)
+	         : c->b->cur == NULL ?  c->a->cur
+	         : p_wf_dname_cmp(&c->a->cur, &c->b->cur) ? c->a->cur
+	         : c->b->cur;
+}
+
+static p_merger *p_merger_new(p_merger *a, p_merger *b)
+{
+	p_combine *c = malloc(sizeof(p_combine));
+
+	assert(c != NULL);
+	c->a = a;
+	c->b = b;
+	c->m.cur = a->cur == NULL ? (b->cur ? b->cur : NULL)
+	         : b->cur == NULL ? a->cur
+	         : p_wf_dname_cmp(&a->cur, &b->cur) ? a->cur : b->cur;
+	c->m.next = p_merger_next;
+	return &c->m;
+}
+
+typedef struct p_partial p_partial;
+struct p_partial {
+	p_merger       m;
+	pthread_t      lt;
+	wf_dname_ref **refs;
+	wf_dname_ref **ref;
+	wf_dname_ref **last_ref;
+	uint8_t       *mem;
+	uint8_t       *cur;
+	uint8_t       *end;
+	char           tmpfn[1024];
+	int            tmpfd;
+	size_t         mem_sz;
+	size_t         n_refs;
+	p_partial     *prev;
+};
+
+static void p_partial_merger_next(p_merger *m)
+{
+	p_partial *p = (p_partial *)m;
+
+	assert(m->cur == (wf_dname_ref *)p->cur);
+	p->cur = m->cur->dname + m->cur->dname_sz + m->cur->txt_sz;
+	if (p->cur >= p->end) {
+		munmap(p->mem, p->end - p->mem);
+		p->cur = p->mem = p->end = NULL;
+		m->cur = NULL;
+		close(p->tmpfd);
+		unlink(p->tmpfn);
+	}
+	m->cur = (wf_dname_ref *)p->cur;
+	if (p->cur - p->mem > pagesize) {
+		size_t n = (p->cur - p->mem) /pagesize;
+
+		munmap(p->mem, n * pagesize);
+		p->mem += n * pagesize;
+	}
+}
+
+static p_partial *p_partial_new()
+{
+	p_partial *p;
+
+	if (!(p = malloc(sizeof(p_partial))))
+		return NULL;
+	if (!(p->cur = p->mem = malloc(SPLIT_SIZE)))
+		return NULL;
+	else	p->end = p->mem + SPLIT_SIZE;
+	if (!(p->ref = p->refs= malloc(SPLIT_SIZE/32*sizeof(wf_dname_ref *))))
+		return NULL;
+	else	p->last_ref = &p->refs[SPLIT_SIZE/32];
+	strcpy(p->tmpfn, "/tmp/sort-zone-XXXXXX");
+	p->tmpfd = -1;
+	p->mem_sz = 0;
+	p->n_refs = 0;
+	p->prev = NULL;
+	p->lt = 0;
+	return p;
+}
+
+
+static void p_partial_mktmpfn(p_partial *p, const char *fn)
+{
+	size_t   cnt = 0;
+	p_partial *c = p->prev;
+	const char *s = strrchr(fn, '/');
+
+	if (!s)
+		s = fn;
+	while (c) {
+		c = c->prev;
+		cnt += 1;
+	}
+	snprintf( p->tmpfn, sizeof(p->tmpfn)
+	        , "/tmp/sort-zone-%s-%.2zu-XXXXXX", s, cnt);
+}
+
+static void *p_partial_sort_save_(void *arg)
+{
+	p_partial *p = (p_partial *)arg;
+	wf_dname_ref **ref;
+
+	p->mem_sz = p->cur - p->mem;
+	p->n_refs = p->ref - p->refs;
+	fprintf(stderr, "Sorting %zu bytes in %zu names at %zd\n"
+	              , p->mem_sz, p->n_refs, time(NULL) - start_t);
+	p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
+	fprintf(stderr, "Saving  %zu bytes in %zu names at %zd\n"
+	              , p->mem_sz, p->n_refs, time(NULL) - start_t);
+	if ((p->tmpfd = mkstemp(p->tmpfn)) < 0)
+		perror("Could not create temporary partial file");
+
+	FILE *f = fdopen(p->tmpfd, "w");
+	for ( ref = p->refs; ref < p->ref; ref++) {
+		if (!fwrite(*ref, sizeof(wf_dname_ref) + (*ref)->dname_sz
+		                                       + (*ref)->txt_sz, 1, f))
+			perror("Error writing to temporary partial file");
+	}
+	fclose(f);
+	p->tmpfd = -1;
+	free(p->mem);
+	free(p->refs);
+	p->mem = p->cur = p->end = NULL;
+	p->refs = p->ref = p->last_ref = NULL;
+	fprintf(stderr, "Saved   %zu bytes in %zu names at %zd\n"
+	              , p->mem_sz, p->n_refs, time(NULL) - start_t);
+	return NULL;
+}
+
+static inline void p_partial_sort_save(p_partial *p, const char *fn)
+{
+	p_partial_mktmpfn(p, fn);
+	p_partial_sort_save_(p);
+}
+
+static inline p_partial *p_partial_next(p_partial *p, const char *fn)
+{
+	p_partial *n;
+
+	if ((n = p_partial_new(p)))
+		n->prev = p;
+
+	p_partial_mktmpfn(p, fn);
+	if (pthread_create( &p->lt, PTHREAD_CREATE_JOINABLE
+	                  , p_partial_sort_save_, (void *)p))
+		p_partial_sort_save_(p);
+	return n;
+}
+
 int main(int argc, char **argv)
 {
-	zone_wf_iter zi_spc, *zi;
-	uint8_t        *mem = NULL;
-	uint8_t        *end = NULL;
-	uint8_t        *cur = NULL;
-	wf_dname_ref **refs = NULL, **ref, **r;
-	uint8_t    *ref_mem = NULL;
-	uint8_t    *ref_end = NULL;
-	uint8_t    *ref_cur = NULL;
-	time_t          now = time(NULL);
-	size_t     pagesize = 0;
+	zone_wf_iter zi_spc, *zi = NULL;
 	char          outfn[4096];
 	int           s, fd;
 	uint8_t        *out = NULL;
 	uint8_t    *out_end = NULL;
+	p_partial        *p = NULL;
+
+	time(&start_t);
+	pagesize = sysconf(_SC_PAGESIZE) * 64;
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
 		return 1;
 	}
-	if ((zi = zone_wf_iter_init(&zi_spc, argv[1], argc == 3 ? argv[2] : ""))) {
-		cur = mem = mmap( NULL, (zi->zi.end - zi->zi.text) * 2 
-		                , (PROT_READ|PROT_WRITE)
-			        , (MAP_PRIVATE|MAP_ANONYMOUS), -1, 0);
-		end = mem + (zi->zi.end - zi->zi.text) * 2;
-		assert(mem != MAP_FAILED);
-		ref = refs = mmap( NULL, (zi->zi.end - zi->zi.text) / 4
-		                 , (PROT_READ|PROT_WRITE)
-		                 , (MAP_PRIVATE|MAP_ANONYMOUS), -1, 0);
-		ref_mem = (void *)refs;
-		ref_end = ref_mem + ((zi->zi.end - zi->zi.text) / 4);
-		assert(refs != MAP_FAILED);
-		pagesize = zi->zi.pagesize;
-	} else
-		return 1;
+	if (!(zi = zone_wf_iter_init(&zi_spc, argv[1], argc==3?argv[2]:""))) {
+		fprintf(stderr, "Could not open zone\n");
+		return EXIT_FAILURE;
+	}
+	if (!(p = p_partial_new())) {
+		fprintf(stderr, "Memory allocation error\n");
+		return EXIT_FAILURE;
+	}
 	while (zi) {
 		ssize_t n;
 		uint8_t *dname;
 
 		DEBUG_WF_ITER(zi);
 
-		(*ref)         = (void *)cur;
-		(*ref)->txt_sz =  zi->rr_len
-		               - (zi->rr_type_or_class_type->start - zi->rr);
-		// (*ref)->ttl    =  zi->ttl;
-		/*
-		(*ref)->start =  zi->rr_type_or_class_type->start;
-		(*ref)->sz    =  zi->rr_len
-		              - (zi->rr_type_or_class_type->start - zi->rr);
-		*/
-		dname = (*ref)->dname;
+		if (( p->ref >= p->last_ref
+		    ||  p->cur + 1024 + zi->rr_len > p->end)
+		&& (!(p = p_partial_next(p, argv[1])))) {
+			fprintf(stderr, "Could not create next partial\n");
+			return EXIT_FAILURE;
+		}
+		(*p->ref)         = (void *)p->cur;
+		(*p->ref)->txt_sz = zi->rr_len;
+		(*p->ref)->ttl    = zi->ttl;
+		dname = (*p->ref)->dname;
 
 		for (n = (ssize_t)zi->owner.n - 2; n >= 0; n--) {
 			memcpy(dname, zi->owner.l[n], zi->owner.l[n][0] + 1);
 			dname += zi->owner.l[n][0] + 1;
 		}
 		*dname++ = 0;
-		(*ref)->dname_sz = dname - (*ref)->dname;
-		cur = dname;
-		//memcpy(cur, zi->rr, zi->rr_len);
-		memcpy(cur, zi->rr_type_or_class_type->start, (*ref)->txt_sz);
-		cur += (*ref)->txt_sz;
-		assert((*ref)->dname + (*ref)->dname_sz + (*ref)->txt_sz == cur);
-		ref += 1;
+		(*p->ref)->dname_sz = dname - (*p->ref)->dname;
+		p->cur = dname;
+		memcpy(p->cur, zi->rr, (*p->ref)->txt_sz);
+		p->cur += (*p->ref)->txt_sz;
+		p->ref += 1;
 		zi = zone_wf_iter_next(zi);
 	}
-	uint8_t *to_free = mem + (cur - mem) / pagesize * pagesize;
-	if (to_free < cur) to_free += pagesize;
-	assert(to_free > cur);
-	if (to_free < end) {
-		fprintf(stderr, "Freeing %zu/%zu bytes from wf_dname_ref mem\n"
-		              , (size_t)(end - to_free), (size_t)(end - mem));
-		munmap(to_free, end - to_free);
-	}
-	ref_cur = (void *)ref;
-	to_free = ref_mem + (ref_cur - ref_mem) / pagesize * pagesize;
-	if (to_free < ref_cur) to_free += pagesize;
-	assert(to_free > ref_cur);
-	if (to_free < ref_end) {
-		fprintf(stderr, "Freeing %zu/%zu bytes from wf_dname_ref refs\n"
-		              , (size_t)(ref_end - to_free)
-			      , (size_t)(ref_end - ref_mem));
-		munmap(to_free, ref_end - to_free);
-	}
-	fprintf(stderr, "Start sorting %zu RRs at %d\n", (size_t)(ref - refs)
-	       , (int)(time(NULL) - now));
-	p_qsort(refs, 0, (ref - refs) - 1);
-	fprintf(stderr, "Saving zone at %d\n", (int)(time(NULL) - now));
+	p_partial_sort_save(p, argv[1]);
 
+	size_t  n_ps = 0;
+	p_partial *c = p;
+	p_merger  *ms[64], *m;
+
+	while (c) {
+		pthread_join(c->lt, NULL);
+		c->tmpfd = open(c->tmpfn, O_RDONLY);
+		assert(c->tmpfd >= 0);
+		c->cur = c->mem = mmap(NULL, c->mem_sz, PROT_READ,
+		    MAP_PRIVATE, c->tmpfd, 0);
+		assert(c->mem != MAP_FAILED);
+		c->end = c->mem + c->mem_sz;
+		c->m.cur = (wf_dname_ref *)c->cur;
+		c->m.next = p_partial_merger_next;
+		ms[n_ps++] = &c->m;
+		c = c->prev;
+	}
+	while (n_ps > 1) {
+		size_t i, j;
+		for (i = 0, j = 0; i < n_ps; i += 2, j++) {
+			if (i + 1 < n_ps)
+				ms[j] = p_merger_new(ms[i], ms[i + 1]);
+
+			else	ms[j] = ms[i];
+		}
+		n_ps = j;
+	}
 	s = snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
 	assert(s < sizeof(outfn));
 
-#if 1
-	if ((fd = open(outfn, O_CREAT|O_RDWR|O_TRUNC|O_LARGEFILE, 0644)) < 0)
-		perror("Could not open sorted output file");
-	if (ftruncate64(fd, (zi_spc.zi.end - zi_spc.zi.text)) < 0)
-		perror("Growing output file");
-	fprintf(stderr, "Truncating done at %d\n", (int)(time(NULL) - now));
-	to_free = cur = out = mmap(NULL, (zi_spc.zi.end - zi_spc.zi.text)
-	                               , PROT_WRITE
-	                               , MAP_SHARED, fd, 0);
-	assert(out != NULL && out != MAP_FAILED);
-	out_end = out + (zi_spc.zi.end - zi_spc.zi.text);
-	s = 0;
-	for (r = refs; r < ref; r++) {
-		// memcpy(cur, (*r)->start, (*r)->sz);
-		// TODO memcpy something else
-		memcpy(cur, (*r)->dname + (*r)->dname_sz, (*r)->txt_sz);
-		cur += (*r)->txt_sz;
-		*cur++ = '\n';
-		if ((cur - to_free) > pagesize) {
-			size_t n = (cur - to_free) / pagesize;
+	FILE *f = fopen(outfn, "w");
 
-			munmap(to_free, n * pagesize);
-			to_free += n * pagesize;
-			if ((to_free - out) * 100 / (out_end - out) > s) {
-				s = (to_free - out) * 100 / (out_end - out);
-				fprintf(stderr, "Saving %d%% done at %d\n", s, (int)(time(NULL) - now));
-			}
-		}
+	for (m = ms[0]; m->cur; m->next(m)) {
+		fwrite(m->cur->dname + m->cur->dname_sz, m->cur->txt_sz, 1, f);
+		putc('\n', f);
 	}
-	if (ftruncate64(fd, cur - out))
-		perror("Truncating output file");
-	close(fd);
-	/*
-	for (r = refs; r < ref; r++) {
-		printf("%.*s\n", (int)(*r)->sz, (*r)->start);
-	}
-	*/
-#endif
-	fprintf(stderr, "Done at %d\n", (int)(time(NULL) - now));
+	fclose(f);
 	return 0;
 }

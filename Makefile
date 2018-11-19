@@ -12,6 +12,7 @@ sort-zone: sort-zone.o
 	$(CC) -o $@ $< -lpthread
 
 sort-zone.o: sort-zone.c
+	#$(CC) -g -c $<
 	$(CC) -Ofast -c $<
 
 clean:
