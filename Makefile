@@ -13,7 +13,7 @@ sort-zone: sort-zone.o
 
 sort-zone.o: sort-zone.c
 	#$(CC) -g -c $<
-	$(CC) -Ofast -c $<
+	$(CC) -Ofast -Wall -Wpedantic -c $<
 
 clean:
 	rm -f sort-zone sort-zone.o rev-zone rev-zone.o

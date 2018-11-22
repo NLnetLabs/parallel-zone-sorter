@@ -236,50 +236,6 @@ const char *zone_iter_next(zone_iter *i, size_t *olen)
 	return p_zone_iter_get_part(i, olen);
 }
 
-static inline void print_rev(size_t sz, const char *name)
-{
-	size_t o_sz;
-	const char *o_name;
-
-	if (sz == 0)
-		return;
-
-	o_sz   = sz;
-	o_name = name;
-
-	for (;;) {
-		if (*name == '.') {
-			if (sz > 1) {
-				print_rev(sz - 1, name + 1);
-				printf(".%.*s", (int)(o_sz - sz), o_name);
-			} else {
-				printf("%.*s", (int)(o_sz - sz), o_name);
-			}
-			return;
-
-		} else if (*name == '\\') {
-			if (--sz == 0) break;
-			name++;
-			if (*name >= '0' || *name < '9') {
-				if (--sz == 0) break;
-				name++;
-				if (*name >= '0' || *name < '9') {
-					if (--sz == 0) break;
-					name++;
-					if (*name >= '0' || *name < '9') {
-						if (--sz == 0) break;
-						name++;
-					}
-				}
-			}
-		} else {
-			if (--sz == 0) break;
-			name++;
-		}
-	}
-	printf("%.*s", (int)o_sz, o_name);
-}
-
 typedef struct wf_labels {
 	uint8_t l[128][64];
 	size_t  n;
@@ -358,40 +314,6 @@ typedef struct zone_wf_iter {
 	rr_part    *rr_type_or_class_type;
 } zone_wf_iter;
 
-void debug_wf_iter(zone_wf_iter *zi)
-{
-	size_t i;
-	char dname[1024], *d = dname, *dend = dname + sizeof(dname);
-
-	for (i = 0; i < zi->owner.n; i++) {
-		size_t j;
-
-		for (j = 0; j < zi->owner.l[i][0]; j++) {
-			unsigned char c = zi->owner.l[i][j+1];
-
-			if (c == '.' || c == ';'
-			||  c == '(' ||  c == ')' || c == '\\') {
-				*d++ = '\\';
-				*d++ = c;
-			} else if (!(isascii(c) && isgraph(c))) {
-				*d++ = '\\';
-				*d++ = '0' + (c / 100);
-				*d++ = '0' + (c % 100 / 10);
-				*d++ = '0' + (c % 10);
-			} else
-				*d++ = c;
-		}
-		if (j)
-			*d++ = '.';
-	}
-	*d++ = 0;
-	printf( "%6d %s[-%d:]\t%.*s\n", (int)zi->ttl, dname
-	      , (int)zi->origin.n
-	      , (int)( zi->rr_type_or_class_type->end
-	             - zi->rr_type_or_class_type->start)
-	      , zi->rr_type_or_class_type->start);
-}
-
 static inline uint32_t p_wf_parse_ttl(const char *str, size_t sz)
 {
 	char buf[11], *endptr;
@@ -408,7 +330,6 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 {
 	rr_part *part = i->zi.parts;
 	ssize_t part_sz;
-	size_t n;
 	int r;
 
 	if (part->start > i->rr) {
@@ -488,12 +409,6 @@ zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
 	return p_zone_wf_iter_process_rr(i);
 }
 
-#if 0
-# define DEBUG_WF_ITER(zi) debug_wf_iter(zi)
-#else
-# define DEBUG_WF_ITER(zi)
-#endif
-
 typedef struct wf_dname_ref {
 	uint32_t ttl;
 	uint16_t txt_sz;
@@ -515,19 +430,15 @@ static inline int p_wf_dname_cmp(const void *A, const void *B)
 		for (lsz = *l++, rsz = *r++; lsz; l++, r++, lsz--, rsz--) {
 			if (!rsz)
 				return 0;
-			if (*l != *r) {
-				if (*l < *r)
-					return 1;
-				return 0;
-			}
+			if (*l != *r)
+				return *l < *r ? 1 : 0;
 		}
 		if (rsz)
 			return 1;
 	}
 	if (*r)
 		return 1;
-	/* Equal names */
-	return a < b ? 1 : /* a->start > b->start ? 1 : 0 */ 0;
+	return a < b ? 1 : 0;
 }
 
 typedef struct p_qsort_args {
@@ -606,7 +517,7 @@ static void p_merger_next(p_merger *m)
 	if (c->m.cur == c->a->cur)
 		c->a->next(c->a);
 	else {
-		assert(c->m.cur = c->b->cur);
+		assert(c->m.cur == c->b->cur);
 		c->b->next(c->b);
 	}
 	c->m.cur = c->a->cur == NULL ? (c->b->cur ? c->b->cur : NULL)
@@ -761,12 +672,15 @@ static inline p_partial *p_partial_next(p_partial *p, const char *fn)
 int main(int argc, char **argv)
 {
 	zone_wf_iter zi_spc, *zi = NULL;
-	char          outfn[4096];
-	int           s, fd;
-	uint8_t        *out = NULL;
-	uint8_t    *out_end = NULL;
-	p_partial        *p = NULL;
+	char         outfn[4096];
+	int          s;
+	p_partial   *p = NULL;
+	size_t       n_ps;
+	p_partial   *c;
+	p_merger    *ms[64], *m;
+	FILE        *f;
 
+	/* Initialize globals */
 	time(&start_t);
 	pagesize = sysconf(_SC_PAGESIZE) * 64;
 
@@ -785,8 +699,6 @@ int main(int argc, char **argv)
 	while (zi) {
 		ssize_t n;
 		uint8_t *dname;
-
-		DEBUG_WF_ITER(zi);
 
 		if (( p->ref >= p->last_ref
 		    ||  p->cur + 1024 + zi->rr_len > p->end)
@@ -811,13 +723,25 @@ int main(int argc, char **argv)
 		p->ref += 1;
 		zi = zone_wf_iter_next(zi);
 	}
+	s = snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
+	assert(s < sizeof(outfn));
+	if (!p->prev) {
+		wf_dname_ref **ref;
+
+		/* Just one part, just sort and save this single part */
+		p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
+		f = fopen(outfn, "w");
+		for (ref = p->refs; ref < p->ref; ref++) {
+			fwrite( (*ref)->dname + (*ref)->dname_sz
+			      , (*ref)->txt_sz, 1, f);
+			putc('\n', f);
+		}
+		fclose(f);
+		return 0;
+	}
 	p_partial_sort_save(p, argv[1]);
 
-	size_t  n_ps = 0;
-	p_partial *c = p;
-	p_merger  *ms[64], *m;
-
-	while (c) {
+	for (n_ps = 0, c = p; c; c = c->prev) {
 		pthread_join(c->lt, NULL);
 		c->tmpfd = open(c->tmpfn, O_RDONLY);
 		assert(c->tmpfd >= 0);
@@ -828,7 +752,6 @@ int main(int argc, char **argv)
 		c->m.cur = (wf_dname_ref *)c->cur;
 		c->m.next = p_partial_merger_next;
 		ms[n_ps++] = &c->m;
-		c = c->prev;
 	}
 	while (n_ps > 1) {
 		size_t i, j;
@@ -840,12 +763,7 @@ int main(int argc, char **argv)
 		}
 		n_ps = j;
 	}
-	s = snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
-	assert(s < sizeof(outfn));
-
-	FILE *f = fopen(outfn, "w");
-
-	for (m = ms[0]; m->cur; m->next(m)) {
+	for (f = fopen(outfn, "w"), m = ms[0]; m->cur; m->next(m)) {
 		fwrite(m->cur->dname + m->cur->dname_sz, m->cur->txt_sz, 1, f);
 		putc('\n', f);
 	}
