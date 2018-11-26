@@ -858,11 +858,12 @@ int main(int argc, char **argv)
 		wf_dname_ref **ref, *r;
 		uint8_t prev_dname_sz = 0;
 		uint8_t origin_sz = 0;
-		//uint8_t *prev_dname = NULL;
+		uint8_t *prev_dname = NULL;
 
 		/* Just one part, just sort and save this single part */
 		p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
-		f = fopen(outfn, "w");
+		if (!(f = fopen(outfn, "w")))
+			perror("Could not create output file");
 		fprintf(f, "$TTL %" PRIu32 "\n", origin_ttl);
 		for (ref = p->refs; ref < p->ref; ref++) {
 			r = *ref;
@@ -882,8 +883,21 @@ int main(int argc, char **argv)
 					           , f);
 					putc(' ', f);
 				}
-			} else
+			} else if (prev_dname
+			       && !memcmp( r->dname   + origin_sz
+			                 , prev_dname + origin_sz
+					 , prev_dname_sz - origin_sz ))
 				putc(' ', f);
+
+			else if (prev_dname_sz == origin_sz)
+				fputs("@ ", f);
+			else {
+				print_dname( r->dname + origin_sz
+				           , prev_dname_sz - origin_sz
+				           , f);
+				putc(' ', f);
+			}
+			prev_dname = r->dname;
 			if (r->ttl != origin_ttl)
 				fprintf(f, "%" PRIu32 " ", r->ttl);
 			fwrite(r->dname + r->dname_sz + 1, r->txt_sz, 1, f);
