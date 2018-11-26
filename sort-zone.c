@@ -303,6 +303,38 @@ static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
 	return 1;
 }
 
+typedef struct ttl_count ttl_count;
+struct ttl_count {
+	uint32_t   ttl;
+	uint32_t   cnt;
+	ttl_count *nxt;
+};
+static ttl_count  ttl_counts[65536];
+static ttl_count *max_ttl;
+
+static ttl_count *p_find_ttl(uint32_t t)
+{
+	uint32_t x;
+	ttl_count *r;
+
+	if (!t)
+		return ttl_counts;
+
+	x = ((t >> 16) ^ t) * 0x119de1f3;
+	x = ((x >> 16) ^ x) * 0x119de1f3;
+	x =  (x >> 16) ^ x;
+
+	assert(x != 0);
+
+	r = &ttl_counts[x % (sizeof(ttl_counts) / sizeof(ttl_count))];
+	if (!r->ttl)
+		r->ttl = t;
+	else
+		assert(r->ttl == t);
+
+	return r;
+}
+
 typedef struct zone_wf_iter {
 	zone_iter   zi;
 
@@ -311,7 +343,7 @@ typedef struct zone_wf_iter {
 
 	wf_labels   origin;
 	wf_labels   owner;
-	uint32_t    orig_ttl;
+	ttl_count  *orig_ttl;
 	uint32_t    ttl;
 	rr_part    *rr_type;
 	uint16_t    rr_class;
@@ -381,7 +413,8 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 	} else if (part_sz == 4 && strncasecmp(part->start, "$TTL", 4) == 0) {
 		/* $TTL */
 		part++;
-		i->orig_ttl = p_wf_parse_ttl(part->start, part->end - part->start);
+		i->orig_ttl = p_find_ttl(p_wf_parse_ttl(
+		    part->start, part->end - part->start));
 		return zone_wf_iter_next(i);
 	} else {
 		/* Other $ directive */
@@ -390,11 +423,17 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 	/* Skip class */
 	if (part->start && part->start[0] >= '0' && part->start[0] <= '9') {
 		/* TTL */
+		ttl_count *c; 
 		i->ttl = p_wf_parse_ttl(part->start, part->end - part->start);
+		c = p_find_ttl(i->ttl);
+		if (++c->cnt > max_ttl->cnt)
+			max_ttl = c;
 		part++;
 		part_sz = (part->end - part->start);
 	} else {
-		i->ttl = i->orig_ttl;
+		i->ttl = i->orig_ttl->ttl;
+		if (++i->orig_ttl->cnt > max_ttl->cnt)
+			max_ttl = i->orig_ttl;
 	}
 	/* Is last part class? */
 	if (part_sz == 2) {
@@ -450,7 +489,7 @@ zone_wf_iter *zone_wf_iter_init(
 		i->origin.l[i->origin.n++][0] = 0;
 
 	i->owner = i->origin;
-	i->orig_ttl = 3600;
+	i->orig_ttl = p_find_ttl(3600);
 	i->rr_class = 1;
 	return p_zone_wf_iter_process_rr(i);
 }
@@ -759,10 +798,13 @@ int main(int argc, char **argv)
 	p_partial   *c;
 	p_merger    *ms[64], *m;
 	FILE        *f;
+	uint32_t     origin_ttl;
 
 	/* Initialize globals */
 	time(&start_t);
 	pagesize = sysconf(_SC_PAGESIZE) * 64;
+	memset(ttl_counts, 0, sizeof(ttl_counts));
+	max_ttl = p_find_ttl(3600);
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
@@ -806,6 +848,7 @@ int main(int argc, char **argv)
 		p->ref += 1;
 		zi = zone_wf_iter_next(zi);
 	}
+	origin_ttl = max_ttl->ttl;
 #ifndef NDEBUG
 	s = 
 #endif
@@ -820,6 +863,7 @@ int main(int argc, char **argv)
 		/* Just one part, just sort and save this single part */
 		p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
 		f = fopen(outfn, "w");
+		fprintf(f, "$TTL %" PRIu32 "\n", origin_ttl);
 		for (ref = p->refs; ref < p->ref; ref++) {
 			r = *ref;
 			if (origin_sz != r->origin_sz) {
@@ -840,7 +884,8 @@ int main(int argc, char **argv)
 				}
 			} else
 				putc(' ', f);
-			fprintf(f, "%" PRIu32 " ", r->ttl);
+			if (r->ttl != origin_ttl)
+				fprintf(f, "%" PRIu32 " ", r->ttl);
 			fwrite(r->dname + r->dname_sz + 1, r->txt_sz, 1, f);
 			putc('\n', f);
 		}
