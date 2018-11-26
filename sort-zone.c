@@ -1,17 +1,19 @@
+/* #define NDEBUG 1 */
 #define _LARGEFILE64_SOURCE
-#include <sys/mman.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <assert.h>
-#include <unistd.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdint.h>
-#include <ctype.h>  /* isdigit() */
-#include <stdlib.h> /* strtoul() */
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
-#include <pthread.h>
+#include <unistd.h>
 
 #define THREAD_THRESHOLD 8192
 #define SPLIT_SIZE 2145000000
@@ -311,7 +313,8 @@ typedef struct zone_wf_iter {
 	wf_labels   owner;
 	uint32_t    orig_ttl;
 	uint32_t    ttl;
-	rr_part    *rr_type_or_class_type;
+	rr_part    *rr_type;
+	uint16_t    rr_class;
 } zone_wf_iter;
 
 static inline uint32_t p_wf_parse_ttl(const char *str, size_t sz)
@@ -330,35 +333,48 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 {
 	rr_part *part = i->zi.parts;
 	ssize_t part_sz;
+#ifndef NDEBUG
 	int r;
+#endif
 
+	part_sz = (part->end - part->start);
 	if (part->start > i->rr) {
 		; /* pass: Owner is previous owner */
 
-	} else if ((part_sz = (part->end - part->start)) <= 0)
+	} else if (part_sz <= 0)
 		return zone_wf_iter_next(i); /* Empty line? */
 
 	else if (part->start[0] == '@' && part_sz == 1) {
 		/* Owner is origin */
 		p_wf_labels_cpy(&i->owner, &i->origin);
 		part++;
+		part_sz = (part->end - part->start);
 
 	} else if (part->start[0] != '$') {
 		/* Regular owner name */
-
-		r = p_dname2wf(part->start, part_sz, &i->owner);
+#ifndef NDEBUG
+		r =
+#endif
+		    p_dname2wf(part->start, part_sz, &i->owner);
 		assert(r);
 		if (!p_wf_labels_are_fqdn(&i->owner)) {
-			r = p_wf_labels_cat(&i->owner, &i->origin);
+#ifndef NDEBUG
+			r =
+#endif
+			    p_wf_labels_cat(&i->owner, &i->origin);
 			assert(r);
 		}
 		part++;
+		part_sz = (part->end - part->start);
 
 	} else if (part_sz == 7
 	       && strncasecmp(part->start, "$ORIGIN", 7) == 0) {
 		/* $ORIGIN */
 		part++;
-		r = p_dname2wf(part->start, part->end-part->start, &i->origin);
+#ifndef NDEBUG
+		r =
+#endif
+		    p_dname2wf(part->start, part->end-part->start, &i->origin);
 		assert(r);
 		return zone_wf_iter_next(i);
 
@@ -376,9 +392,45 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 		/* TTL */
 		i->ttl = p_wf_parse_ttl(part->start, part->end - part->start);
 		part++;
-	} else
+		part_sz = (part->end - part->start);
+	} else {
 		i->ttl = i->orig_ttl;
-	i->rr_type_or_class_type = part;
+	}
+	/* Is last part class? */
+	if (part_sz == 2) {
+		if ((part->start[0] == 'I' || part->start[0] == 'i')
+		&&  (part->start[1] == 'N' || part->start[1] == 'n')) {
+			i->rr_class = 1;
+			part++;
+
+		} else if ((part->start[0] == 'C' || part->start[0] == 'c')
+		       &&  (part->start[1] == 'H' || part->start[1] == 'h')) {
+			i->rr_class = 3;
+			part++;
+
+		} else if ((part->start[0] == 'H' || part->start[0] == 'h')
+		       &&  (part->start[1] == 'S' || part->start[1] == 's')) {
+			i->rr_class = 4;
+			part++;
+		}
+	} else if (part_sz > 5 && part_sz < 11
+	       && (part->start[0] == 'C' || part->start[0] == 'c')
+	       && (part->start[1] == 'L' || part->start[1] == 'l')
+	       && (part->start[2] == 'A' || part->start[2] == 'a')
+	       && (part->start[3] == 'S' || part->start[3] == 's')
+	       && (part->start[4] == 'S' || part->start[4] == 's')) {
+		char nptr[7], *endptr;
+		unsigned long int c;
+		
+		memcpy(nptr, part->start + 5, part_sz - 5);
+		nptr[part_sz - 5] = 0;
+		c = strtoul(nptr, &endptr, 10);
+		if (*endptr == 0) {
+			i->rr_class = c;
+			part++;
+		}
+	}
+	i->rr_type = part;
 	return i;
 }
 
@@ -399,6 +451,7 @@ zone_wf_iter *zone_wf_iter_init(
 
 	i->owner = i->origin;
 	i->orig_ttl = 3600;
+	i->rr_class = 1;
 	return p_zone_wf_iter_process_rr(i);
 }
 
@@ -412,7 +465,7 @@ zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
 typedef struct wf_dname_ref {
 	uint32_t ttl;
 	uint16_t txt_sz;
-	uint8_t  origin_pos;
+	uint8_t  origin_sz;
 	uint8_t  dname_sz;
 	uint8_t  dname[];
 } wf_dname_ref;
@@ -424,7 +477,14 @@ static inline int p_wf_dname_cmp(const void *A, const void *B)
 	const uint8_t *l, *r;
 	uint8_t lsz, rsz;
 
-	for (l = a->dname, r = b->dname; *l;) {
+	if (a->origin_sz <= b->origin_sz) {
+		l = a->dname + a->origin_sz;
+		r = b->dname + a->origin_sz;
+	} else  {
+		l = a->dname + b->origin_sz;
+		r = b->dname + b->origin_sz;
+	}
+	while (*l) {
 		if (!*r)
 			return 0;
 		for (lsz = *l++, rsz = *r++; lsz; l++, r++, lsz--, rsz--) {
@@ -600,7 +660,6 @@ static p_partial *p_partial_new()
 	return p;
 }
 
-
 static void p_partial_mktmpfn(p_partial *p, const char *fn)
 {
 	size_t   cnt = 0;
@@ -669,11 +728,32 @@ static inline p_partial *p_partial_next(p_partial *p, const char *fn)
 	return n;
 }
 
+static void print_dname(uint8_t *dname, uint8_t dname_sz, FILE *f)
+{
+	uint8_t *labels[128];
+	uint8_t *end = dname + dname_sz;
+	size_t i;
+
+	for ( i = 0
+	    ; dname < end && *dname && i < sizeof(labels)
+	    ; dname += *dname + 1, i++)
+		labels[i] = dname;
+
+	while (i > 0) {
+		i -= 1;
+		fwrite(labels[i] + 1, *labels[i], 1, f);
+		if (i)
+			putc('.', f);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	zone_wf_iter zi_spc, *zi = NULL;
 	char         outfn[4096];
+#ifndef NDEBUG
 	int          s;
+#endif
 	p_partial   *p = NULL;
 	size_t       n_ps;
 	p_partial   *c;
@@ -707,33 +787,61 @@ int main(int argc, char **argv)
 			return EXIT_FAILURE;
 		}
 		(*p->ref)         = (void *)p->cur;
-		(*p->ref)->txt_sz = zi->rr_len;
-		(*p->ref)->ttl    = zi->ttl;
+		(*p->ref)->txt_sz =  zi->rr_len
+		                  - (zi->rr_type->start - zi->rr);
+		(*p->ref)->ttl    =  zi->ttl;
 		dname = (*p->ref)->dname;
 
 		for (n = (ssize_t)zi->owner.n - 2; n >= 0; n--) {
 			memcpy(dname, zi->owner.l[n], zi->owner.l[n][0] + 1);
 			dname += zi->owner.l[n][0] + 1;
+			if (n == zi->owner.n - zi->origin.n)
+				(*p->ref)->origin_sz = dname - (*p->ref)->dname;
 		}
-		*dname++ = 0;
 		(*p->ref)->dname_sz = dname - (*p->ref)->dname;
+		*dname++ = 0;
 		p->cur = dname;
-		memcpy(p->cur, zi->rr, (*p->ref)->txt_sz);
+		memcpy(p->cur, zi->rr_type->start, (*p->ref)->txt_sz);
 		p->cur += (*p->ref)->txt_sz;
 		p->ref += 1;
 		zi = zone_wf_iter_next(zi);
 	}
-	s = snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
+#ifndef NDEBUG
+	s = 
+#endif
+	    snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
 	assert(s < sizeof(outfn));
 	if (!p->prev) {
-		wf_dname_ref **ref;
+		wf_dname_ref **ref, *r;
+		uint8_t prev_dname_sz = 0;
+		uint8_t origin_sz = 0;
+		//uint8_t *prev_dname = NULL;
 
 		/* Just one part, just sort and save this single part */
 		p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
 		f = fopen(outfn, "w");
 		for (ref = p->refs; ref < p->ref; ref++) {
-			fwrite( (*ref)->dname + (*ref)->dname_sz
-			      , (*ref)->txt_sz, 1, f);
+			r = *ref;
+			if (origin_sz != r->origin_sz) {
+				origin_sz = r->origin_sz;
+				fputs("$ORIGIN ", f);
+				print_dname(r->dname, origin_sz, f);
+				fputs(".\n", f);
+			}
+			if (r->dname_sz != prev_dname_sz) {
+				prev_dname_sz = r->dname_sz;
+				if (r->dname_sz == origin_sz)
+					fputs("@ ", f);
+				else {
+					print_dname( r->dname + origin_sz
+					           , r->dname_sz - origin_sz
+					           , f);
+					putc(' ', f);
+				}
+			} else
+				putc(' ', f);
+			fprintf(f, "%" PRIu32 " ", r->ttl);
+			fwrite(r->dname + r->dname_sz + 1, r->txt_sz, 1, f);
 			putc('\n', f);
 		}
 		fclose(f);
