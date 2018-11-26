@@ -19,6 +19,7 @@
 #define SPLIT_SIZE 2145000000
 
 static long pagesize;
+static long pagesize_preserve;
 static time_t start_t = 0;
 
 typedef struct rr_part {
@@ -83,8 +84,11 @@ static inline const char *p_zone_iter_return(zone_iter *i, size_t *olen)
 	if (i->free && (r - i->to_free) > pagesize) {
 		size_t n = (r - i->to_free) / pagesize;
 
-		munmap(i->to_free, n * pagesize);
-		i->to_free += n * pagesize;
+		n *= pagesize;
+		n -= pagesize_preserve;
+
+		munmap(i->to_free, n);
+		i->to_free += n;
 	}
 	if (i->current_part == i->parts)
 		return p_zone_iter_get_part(i, olen);
@@ -529,8 +533,8 @@ static inline int p_wf_dname_cmp(const void *A, const void *B)
 		for (lsz = *l++, rsz = *r++; lsz; l++, r++, lsz--, rsz--) {
 			if (!rsz)
 				return 0;
-			if (*l != *r)
-				return *l < *r ? 1 : 0;
+			if (tolower(*l) != tolower(*r))
+				return tolower(*l) < tolower(*r) ? 1 : 0;
 		}
 		if (rsz)
 			return 1;
@@ -598,9 +602,12 @@ static void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right)
 
 typedef struct p_merger p_merger;
 typedef void (*p_merger_nexter)(p_merger *m);
+typedef void (*p_merger_destructor)(p_merger *m);
+
 struct p_merger {
-	wf_dname_ref   *cur;
-	p_merger_nexter next;
+	wf_dname_ref       *cur;
+	p_merger_nexter     next;
+	p_merger_destructor free;
 };
 
 typedef struct p_combine {
@@ -625,6 +632,21 @@ static void p_merger_next(p_merger *m)
 	         : c->b->cur;
 }
 
+static void p_merger_free(p_merger *m)
+{
+	p_combine *c = (p_combine *)m;
+
+	if (c->a) {
+		c->a->free(c->a);
+		c->a = NULL;
+	}
+	if (c->b) {
+		c->b->free(c->b);
+		c->b = NULL;
+	}
+	free(c);
+}
+
 static p_merger *p_merger_new(p_merger *a, p_merger *b)
 {
 	p_combine *c = malloc(sizeof(p_combine));
@@ -636,6 +658,7 @@ static p_merger *p_merger_new(p_merger *a, p_merger *b)
 	         : b->cur == NULL ? a->cur
 	         : p_wf_dname_cmp(&a->cur, &b->cur) ? a->cur : b->cur;
 	c->m.next = p_merger_next;
+	c->m.free = p_merger_free;
 	return &c->m;
 }
 
@@ -661,21 +684,43 @@ static void p_partial_merger_next(p_merger *m)
 	p_partial *p = (p_partial *)m;
 
 	assert(m->cur == (wf_dname_ref *)p->cur);
-	p->cur = m->cur->dname + m->cur->dname_sz + m->cur->txt_sz;
+	p->cur = m->cur->dname + m->cur->dname_sz + 1 + m->cur->txt_sz;
 	if (p->cur >= p->end) {
-		munmap(p->mem, p->end - p->mem);
-		p->cur = p->mem = p->end = NULL;
-		m->cur = NULL;
+		p->cur = NULL;
 		close(p->tmpfd);
 		unlink(p->tmpfn);
+		m->cur = NULL;
+		return;
 	}
 	m->cur = (wf_dname_ref *)p->cur;
-	if (p->cur - p->mem > pagesize) {
-		size_t n = (p->cur - p->mem) /pagesize;
+	while (p->cur - p->mem > pagesize) {
+		size_t n = (p->cur - p->mem) / pagesize;
 
-		munmap(p->mem, n * pagesize);
-		p->mem += n * pagesize;
+		n *= pagesize;
+		n -= pagesize_preserve;
+		munmap(p->mem, n);
+		p->mem += n;
 	}
+}
+
+static void p_partial_merger_free(p_merger *m)
+{
+	p_partial *p = (p_partial *)m;
+
+	assert(p->cur == NULL && p->mem != NULL
+	    && p->end != NULL && p->mem < p->end);
+
+	/**
+	 ** p->prev is freed by p_combine
+	 **
+	 *
+	 * if (p->prev) {
+	 * 	p->prev->m.free(&p->prev->m);
+	 * 	p->prev = NULL;
+	 * }
+	 */
+	munmap(p->mem, p->end - p->mem);
+	free(p);
 }
 
 static p_partial *p_partial_new()
@@ -732,7 +777,7 @@ static void *p_partial_sort_save_(void *arg)
 
 	FILE *f = fdopen(p->tmpfd, "w");
 	for ( ref = p->refs; ref < p->ref; ref++) {
-		if (!fwrite(*ref, sizeof(wf_dname_ref) + (*ref)->dname_sz
+		if (!fwrite(*ref, sizeof(wf_dname_ref) + (*ref)->dname_sz + 1
 		                                       + (*ref)->txt_sz, 1, f))
 			perror("Error writing to temporary partial file");
 	}
@@ -767,10 +812,10 @@ static inline p_partial *p_partial_next(p_partial *p, const char *fn)
 	return n;
 }
 
-static void print_dname(uint8_t *dname, uint8_t dname_sz, FILE *f)
+static void print_dname(const uint8_t *dname, uint8_t dname_sz, FILE *f)
 {
-	uint8_t *labels[128];
-	uint8_t *end = dname + dname_sz;
+	const uint8_t *labels[128];
+	const uint8_t *end = dname + dname_sz;
 	size_t i;
 
 	for ( i = 0
@@ -786,23 +831,97 @@ static void print_dname(uint8_t *dname, uint8_t dname_sz, FILE *f)
 	}
 }
 
+typedef struct p_zone_writer {
+	uint32_t origin_ttl;
+	FILE    *f;
+	uint8_t  prev_dname_sz;
+	uint8_t  origin_sz;
+	const uint8_t *prev_dname;
+} p_zone_writer;
+
+static void p_zone_writer_init(p_zone_writer *zw, uint32_t max_ttl, FILE *f)
+{
+	assert(zw);
+	zw->origin_ttl    = max_ttl;
+	zw->f             = f;
+	zw->prev_dname_sz = 0;
+	zw->origin_sz     = 0;
+	zw->prev_dname    = NULL;
+}
+
+static inline int p_dname_equal(const uint8_t *l, const uint8_t *r, size_t sz)
+{
+	while (sz--) {
+		size_t i;
+
+		if (*l != *r)
+			return 0;
+		else if (!*l)
+			return 1;
+		for (i = *l++, r++; sz && i > 0; i--, l++, r++, sz--)
+			if (*l != *r && tolower(*l) != tolower(*r))
+				return 0;
+	}
+	return 1;
+}
+
+static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
+{
+	if (zw->origin_sz != r->origin_sz) {
+		zw->origin_sz = r->origin_sz;
+		fputs("$ORIGIN ", zw->f);
+		print_dname(r->dname, zw->origin_sz, zw->f);
+		fputs(".\n", zw->f);
+	}
+	if (r->dname_sz != zw->prev_dname_sz) {
+		zw->prev_dname_sz = r->dname_sz;
+		if (r->dname_sz == zw->origin_sz)
+			fputs("@ ", zw->f);
+		else {
+			print_dname( r->dname + zw->origin_sz
+				   , r->dname_sz - zw->origin_sz
+				   , zw->f);
+			putc(' ', zw->f);
+		}
+	} else if (zw->prev_dname
+	       &&  p_dname_equal( r->dname   + zw->origin_sz
+			        , zw->prev_dname + zw->origin_sz
+			        , zw->prev_dname_sz - zw->origin_sz ))
+		putc(' ', zw->f);
+
+	else if (zw->prev_dname_sz == zw->origin_sz)
+		fputs("@ ", zw->f);
+	else {
+		print_dname( r->dname + zw->origin_sz
+			   , zw->prev_dname_sz - zw->origin_sz
+			   , zw->f);
+		putc(' ', zw->f);
+	}
+	zw->prev_dname = r->dname;
+	if (r->ttl != zw->origin_ttl)
+		fprintf(zw->f, "%" PRIu32 " ", r->ttl);
+	fwrite(r->dname + r->dname_sz + 1, r->txt_sz, 1, zw->f);
+	putc('\n', zw->f);
+}
+
 int main(int argc, char **argv)
 {
-	zone_wf_iter zi_spc, *zi = NULL;
-	char         outfn[4096];
+	zone_wf_iter  zi_spc, *zi = NULL;
 #ifndef NDEBUG
-	int          s;
+	int           s;
 #endif
-	p_partial   *p = NULL;
-	size_t       n_ps;
-	p_partial   *c;
-	p_merger    *ms[64], *m;
-	FILE        *f;
-	uint32_t     origin_ttl;
+	p_partial    *p = NULL;
+	char          outfn[4096];
+	FILE         *f;
+	p_zone_writer zw;
+	size_t      n_ps;
+	p_partial    *c;
+	p_merger     *ms[64], *m;
 
 	/* Initialize globals */
 	time(&start_t);
-	pagesize = sysconf(_SC_PAGESIZE) * 64;
+	pagesize          = sysconf(_SC_PAGESIZE) * 64;
+	pagesize_preserve = sysconf(_SC_PAGESIZE) *  1;
 	memset(ttl_counts, 0, sizeof(ttl_counts));
 	max_ttl = p_find_ttl(3600);
 
@@ -848,62 +967,25 @@ int main(int argc, char **argv)
 		p->ref += 1;
 		zi = zone_wf_iter_next(zi);
 	}
-	origin_ttl = max_ttl->ttl;
 #ifndef NDEBUG
 	s = 
 #endif
 	    snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
+	if (!(f = fopen(outfn, "w")))
+		perror("Could not create output file");
+	p_zone_writer_init(&zw, max_ttl->ttl, f);
 	assert(s < sizeof(outfn));
 	if (!p->prev) {
-		wf_dname_ref **ref, *r;
-		uint8_t prev_dname_sz = 0;
-		uint8_t origin_sz = 0;
-		uint8_t *prev_dname = NULL;
-
+		wf_dname_ref **ref;
 		/* Just one part, just sort and save this single part */
 		p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
-		if (!(f = fopen(outfn, "w")))
-			perror("Could not create output file");
-		fprintf(f, "$TTL %" PRIu32 "\n", origin_ttl);
 		for (ref = p->refs; ref < p->ref; ref++) {
-			r = *ref;
-			if (origin_sz != r->origin_sz) {
-				origin_sz = r->origin_sz;
-				fputs("$ORIGIN ", f);
-				print_dname(r->dname, origin_sz, f);
-				fputs(".\n", f);
-			}
-			if (r->dname_sz != prev_dname_sz) {
-				prev_dname_sz = r->dname_sz;
-				if (r->dname_sz == origin_sz)
-					fputs("@ ", f);
-				else {
-					print_dname( r->dname + origin_sz
-					           , r->dname_sz - origin_sz
-					           , f);
-					putc(' ', f);
-				}
-			} else if (prev_dname
-			       && !memcmp( r->dname   + origin_sz
-			                 , prev_dname + origin_sz
-					 , prev_dname_sz - origin_sz ))
-				putc(' ', f);
-
-			else if (prev_dname_sz == origin_sz)
-				fputs("@ ", f);
-			else {
-				print_dname( r->dname + origin_sz
-				           , prev_dname_sz - origin_sz
-				           , f);
-				putc(' ', f);
-			}
-			prev_dname = r->dname;
-			if (r->ttl != origin_ttl)
-				fprintf(f, "%" PRIu32 " ", r->ttl);
-			fwrite(r->dname + r->dname_sz + 1, r->txt_sz, 1, f);
-			putc('\n', f);
+			p_zone_writer_next(&zw, *ref);
 		}
 		fclose(f);
+		free(p->mem);
+		free(p->refs);
+		free(p);
 		return 0;
 	}
 	p_partial_sort_save(p, argv[1]);
@@ -918,6 +1000,7 @@ int main(int argc, char **argv)
 		c->end = c->mem + c->mem_sz;
 		c->m.cur = (wf_dname_ref *)c->cur;
 		c->m.next = p_partial_merger_next;
+		c->m.free = p_partial_merger_free;
 		ms[n_ps++] = &c->m;
 	}
 	while (n_ps > 1) {
@@ -930,10 +1013,10 @@ int main(int argc, char **argv)
 		}
 		n_ps = j;
 	}
-	for (f = fopen(outfn, "w"), m = ms[0]; m->cur; m->next(m)) {
-		fwrite(m->cur->dname + m->cur->dname_sz, m->cur->txt_sz, 1, f);
-		putc('\n', f);
+	for (m = ms[0]; m->cur; m->next(m)) {
+		p_zone_writer_next(&zw, m->cur);
 	}
 	fclose(f);
+	m->free(m);
 	return 0;
 }
