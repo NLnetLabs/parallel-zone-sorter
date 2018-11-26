@@ -225,6 +225,11 @@ static const char *p_zone_iter_get_part(zone_iter *i, size_t *olen)
 				i->current_part += 1;
 				return p_zone_iter_get_part(i, olen);
 
+			case '\\':
+				i->cur += 1;
+				if (i->cur < i->end && isspace(*i->cur))
+					i->cur += 1;
+				continue;
 			default:
 				/* Skip non whitespace */
 				i->cur += 1;
@@ -268,7 +273,6 @@ static inline int p_wf_labels_cat(wf_labels *dst, wf_labels *src)
 
 static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
 {
-	// printf("p_dname2wf(%.*s)\n", (int)len, dname);
 	for (labels->n = 0; len; labels->n++) {
 		uint8_t *pq = labels->l[labels->n], *q = pq + 1;
 
@@ -812,21 +816,40 @@ static inline p_partial *p_partial_next(p_partial *p, const char *fn)
 	return n;
 }
 
-static void print_dname(const uint8_t *dname, uint8_t dname_sz, FILE *f)
+static inline void p_print_dname(const uint8_t *dname, uint8_t dname_sz, FILE *f)
 {
-	const uint8_t *labels[128];
-	const uint8_t *end = dname + dname_sz;
-	size_t i;
+	const uint8_t  *labels[128];
+	const uint8_t  *end = dname + dname_sz;
+	const uint8_t **label;
 
-	for ( i = 0
-	    ; dname < end && *dname && i < sizeof(labels)
-	    ; dname += *dname + 1, i++)
-		labels[i] = dname;
+	for ( label = labels
+	    ; dname < end && *dname && label < &labels[ sizeof(labels)
+	                                              / sizeof(*labels)]
+	    ; dname += *dname + 1, label++)
+		*label = dname;
 
-	while (i > 0) {
-		i -= 1;
-		fwrite(labels[i] + 1, *labels[i], 1, f);
-		if (i)
+	while (label > labels) {
+		uint8_t sz;
+		const uint8_t *l;
+
+		label -= 1;
+
+		for (l = *label, sz = *l++; sz; l++, sz--) {
+			switch (*l) {
+			case '.': case ';': case '(':
+			case ')': case '\\':
+				putc('\\', f);
+				putc(*l, f);
+				break;
+			default:
+				if (isascii(*l) && isgraph(*l))
+					putc(*l, f);
+				else
+					fprintf(f, "\\%03u", *l);
+				break;
+			}
+		}
+		if (label > labels)
 			putc('.', f);
 	}
 }
@@ -838,16 +861,6 @@ typedef struct p_zone_writer {
 	uint8_t  origin_sz;
 	const uint8_t *prev_dname;
 } p_zone_writer;
-
-static void p_zone_writer_init(p_zone_writer *zw, uint32_t max_ttl, FILE *f)
-{
-	assert(zw);
-	zw->origin_ttl    = max_ttl;
-	zw->f             = f;
-	zw->prev_dname_sz = 0;
-	zw->origin_sz     = 0;
-	zw->prev_dname    = NULL;
-}
 
 static inline int p_dname_equal(const uint8_t *l, const uint8_t *r, size_t sz)
 {
@@ -865,12 +878,23 @@ static inline int p_dname_equal(const uint8_t *l, const uint8_t *r, size_t sz)
 	return 1;
 }
 
+static void p_zone_writer_init(p_zone_writer *zw, uint32_t max_ttl, FILE *f)
+{
+	assert(zw);
+	zw->origin_ttl    = max_ttl;
+	zw->f             = f;
+	zw->prev_dname_sz = 0;
+	zw->origin_sz     = 0;
+	zw->prev_dname    = NULL;
+	fprintf(f, "$TTL %" PRIu32 "\n", max_ttl);
+}
+
 static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
 {
 	if (zw->origin_sz != r->origin_sz) {
 		zw->origin_sz = r->origin_sz;
 		fputs("$ORIGIN ", zw->f);
-		print_dname(r->dname, zw->origin_sz, zw->f);
+		p_print_dname(r->dname, zw->origin_sz, zw->f);
 		fputs(".\n", zw->f);
 	}
 	if (r->dname_sz != zw->prev_dname_sz) {
@@ -878,7 +902,7 @@ static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
 		if (r->dname_sz == zw->origin_sz)
 			fputs("@ ", zw->f);
 		else {
-			print_dname( r->dname + zw->origin_sz
+			p_print_dname( r->dname + zw->origin_sz
 				   , r->dname_sz - zw->origin_sz
 				   , zw->f);
 			putc(' ', zw->f);
@@ -892,7 +916,7 @@ static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
 	else if (zw->prev_dname_sz == zw->origin_sz)
 		fputs("@ ", zw->f);
 	else {
-		print_dname( r->dname + zw->origin_sz
+		p_print_dname( r->dname + zw->origin_sz
 			   , zw->prev_dname_sz - zw->origin_sz
 			   , zw->f);
 		putc(' ', zw->f);
