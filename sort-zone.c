@@ -836,8 +836,7 @@ void part_mktmpfn(part *p, const char *fn)
 	part *c = p->prev;
 	const char *s = strrchr(fn, '/');
 
-	if (!s)
-		s = fn;
+	s = s ? s + 1 : fn;
 	while (c) {
 		c = c->prev;
 		cnt += 1;
