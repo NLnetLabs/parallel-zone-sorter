@@ -53,7 +53,7 @@
 #else
 # define INLINE
 #endif
-#if 0
+#if 1
 # define LOWER_CMP(x) tolower(x)
 # define LOWER_CPY(x) (x)
 #else
