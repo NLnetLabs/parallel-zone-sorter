@@ -1,3 +1,34 @@
+/* Copyright (c) 2018, NLnet Labs. All rights reserved.
+ * 
+ * This software is open source.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 
+ * Redistributions of source code must retain the above copyright notice,
+ * this list of conditions and the following disclaimer.
+ * 
+ * Redistributions in binary form must reproduce the above copyright notice,
+ * this list of conditions and the following disclaimer in the documentation
+ * and/or other materials provided with the distribution.
+ * 
+ * Neither the name of the NLNET LABS nor the names of its contributors may
+ * be used to endorse or promote products derived from this software without
+ * specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+ * TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 /* #define NDEBUG 1 */
 #define _LARGEFILE64_SOURCE
 #include <assert.h>
@@ -17,10 +48,84 @@
 
 #define THREAD_THRESHOLD 8192
 #define SPLIT_SIZE 2145000000
+#if 1
+# define INLINE inline
+#else
+# define INLINE
+#endif
+#if 0
+# define LOWER_CMP(x) tolower(x)
+# define LOWER_CPY(x) (x)
+#else
+# define LOWER_CMP(x) (x)
+# define LOWER_CPY(x) tolower(x)
+#endif
 
-static long pagesize;
-static long pagesize_preserve;
-static time_t start_t = 0;
+long        pagesize          = 4096 * 64;
+long        pagesize_preserve = 4096 *  1;
+time_t      start_t           = 0;
+typedef struct ttl_count ttl_count;
+struct ttl_count {
+	uint32_t   ttl;
+	uint32_t   cnt;
+	ttl_count *nxt;
+};
+ttl_count   ttl_counts[65536] = { 0 };
+ttl_count  *max_ttl           = ttl_counts;
+int         ttl_collisions    = 0;
+
+#define ARLEN(X) (sizeof(X) / sizeof(*X))
+
+ttl_count *find_ttl(uint32_t t)
+{
+	uint32_t x;
+	ttl_count *r;
+
+	if (!t)
+		return ttl_counts;
+
+	x = ((t >> 16) ^ t) * 0x119de1f3;
+	x = ((x >> 16) ^ x) * 0x119de1f3;
+	x =  (x >> 16) ^ x;
+
+	r = &ttl_counts[x % ARLEN(ttl_counts)];
+	if (x && r->ttl == 0)
+		r->ttl = t;
+	else {
+		while (r->nxt) {
+			if (r->nxt->ttl == t)
+				return r->nxt;
+			r = r->nxt;
+		}
+		r->nxt = malloc(sizeof(ttl_count));
+		assert(r->nxt);
+		ttl_collisions += 1;
+		r->nxt->ttl = t;
+		r->nxt->cnt = 0;
+		r->nxt->nxt = NULL;
+		return r->nxt;
+	}
+	return r;
+}
+
+INLINE void ttl_count_free(ttl_count *r)
+{
+	if (r) {
+		ttl_count_free(r->nxt);
+		free(r);
+	}
+}
+
+void cleanup_ttl_counts()
+{
+	if (ttl_collisions) {
+		ttl_count *r;
+
+		for (r = ttl_counts; r < ttl_counts + ARLEN(ttl_counts); r++) {
+			ttl_count_free(r->nxt);
+		}
+	}
+}
 
 typedef struct rr_part {
 	const char *start;
@@ -73,8 +178,8 @@ int zone_iter_init(zone_iter *i, const char *fn)
 	return 0;
 }
 
-static const char *p_zone_iter_get_part(zone_iter *i, size_t *olen);
-static inline const char *p_zone_iter_return(zone_iter *i, size_t *olen)
+const char *zone_iter_get_part(zone_iter *i, size_t *olen);
+INLINE const char *zone_iter_return(zone_iter *i, size_t *olen)
 {
 	const char *r = i->line;
 
@@ -91,14 +196,14 @@ static inline const char *p_zone_iter_return(zone_iter *i, size_t *olen)
 		i->to_free += n;
 	}
 	if (i->current_part == i->parts)
-		return p_zone_iter_get_part(i, olen);
+		return zone_iter_get_part(i, olen);
 
 	i->current_part->start = NULL;
 
 	return r;
 }
 
-static inline const char *p_zone_iter_at_end(zone_iter *i, size_t *olen)
+INLINE const char *zone_iter_at_end(zone_iter *i, size_t *olen)
 {
 	if (i->line) {
 		const char *r = i->line;
@@ -119,7 +224,7 @@ static inline const char *p_zone_iter_at_end(zone_iter *i, size_t *olen)
 	return NULL;
 }
 
-static const char *p_zone_iter_get_closing_part(zone_iter *i, size_t *olen)
+const char *zone_iter_get_closing_part(zone_iter *i, size_t *olen)
 {
 	switch (*i->cur) {
 	case ';':
@@ -127,9 +232,9 @@ static const char *p_zone_iter_get_closing_part(zone_iter *i, size_t *olen)
 		while (++i->cur < i->end)
 			if (*i->cur == '\n') {
 				i->cur += 1;
-				return p_zone_iter_get_closing_part(i, olen);
+				return zone_iter_get_closing_part(i, olen);
 			}
-		return p_zone_iter_at_end(i, olen);
+		return zone_iter_at_end(i, olen);
 
 	case ' ': case '\t': case '\f': case '\n':
 		while (++i->cur < i->end)
@@ -139,13 +244,13 @@ static const char *p_zone_iter_get_closing_part(zone_iter *i, size_t *olen)
 				continue;
 			default:
 				/* Non whitespace get this part */
-				return p_zone_iter_get_closing_part(i, olen);
+				return zone_iter_get_closing_part(i, olen);
 			}
-		return p_zone_iter_at_end(i, olen);
+		return zone_iter_at_end(i, olen);
 
 	case ')':
 		i->cur += 1;
-		return p_zone_iter_get_part(i, olen);
+		return zone_iter_get_part(i, olen);
 
 	default:
 		i->current_part->start = i->cur;
@@ -155,13 +260,13 @@ static const char *p_zone_iter_get_closing_part(zone_iter *i, size_t *olen)
 				/* Whitespace part, get (or skip) */
 				i->current_part->end = i->cur;
 				i->current_part += 1;
-				return p_zone_iter_get_closing_part(i, olen);
+				return zone_iter_get_closing_part(i, olen);
 
 			case ')':
 				i->current_part->end = i->cur;
 				i->current_part += 1;
 				i->cur += 1;
-				return p_zone_iter_get_part(i, olen);
+				return zone_iter_get_part(i, olen);
 
 			default:
 				/* Skip non whitespace */
@@ -170,44 +275,44 @@ static const char *p_zone_iter_get_closing_part(zone_iter *i, size_t *olen)
 			}
 		i->current_part->end = i->cur;
 		i->current_part += 1;
-		return p_zone_iter_at_end(i, olen);
+		return zone_iter_at_end(i, olen);
 	}
 }
 
 
-static const char *p_zone_iter_get_part(zone_iter *i, size_t *olen)
+const char *zone_iter_get_part(zone_iter *i, size_t *olen)
 {
 	switch (*i->cur) {
 	case ';':
 		/* A comment is NO PART, but skip till end-of-line */
 		while (++i->cur < i->end)
 			if (*i->cur == '\n')
-				return p_zone_iter_return(i, olen);
-		return p_zone_iter_at_end(i, olen);
+				return zone_iter_return(i, olen);
+		return zone_iter_at_end(i, olen);
 
 	case '\n':
 		/* Remaining space is NO PART */
-		return p_zone_iter_return(i, olen);
+		return zone_iter_return(i, olen);
 
 	case ' ': case '\t': case '\f':
 		while (++i->cur < i->end)
 			switch (*i->cur) {
 			case '\n':
 				/* Remaining space is no part */
-				return p_zone_iter_return(i, olen);
+				return zone_iter_return(i, olen);
 
 			case ' ': case '\t': case '\f':
 				/* Skip whitespace */
 				continue;
 			default:
 				/* Non whitespace get this part */
-				return p_zone_iter_get_part(i, olen);
+				return zone_iter_get_part(i, olen);
 			}
-		return p_zone_iter_at_end(i, olen);
+		return zone_iter_at_end(i, olen);
 
 	case '(':
 		i->cur += 1;
-		return p_zone_iter_get_closing_part(i, olen);
+		return zone_iter_get_closing_part(i, olen);
 
 	default:
 		i->current_part->start = i->cur;
@@ -217,13 +322,13 @@ static const char *p_zone_iter_get_part(zone_iter *i, size_t *olen)
 				/* Remaining space is no part */
 				i->current_part->end = i->cur;
 				i->current_part += 1;
-				return p_zone_iter_return(i, olen);
+				return zone_iter_return(i, olen);
 
 			case ' ': case '\t': case '\f':
 				/* Whitespace part, get (or skip) */
 				i->current_part->end = i->cur;
 				i->current_part += 1;
-				return p_zone_iter_get_part(i, olen);
+				return zone_iter_get_part(i, olen);
 
 			case '\\':
 				i->cur += 1;
@@ -237,14 +342,14 @@ static const char *p_zone_iter_get_part(zone_iter *i, size_t *olen)
 			}
 		i->current_part->end = i->cur;
 		i->current_part += 1;
-		return p_zone_iter_at_end(i, olen);
+		return zone_iter_at_end(i, olen);
 	}
 }
 
 const char *zone_iter_next(zone_iter *i, size_t *olen)
 {
 	i->current_part = i->parts;
-	return p_zone_iter_get_part(i, olen);
+	return zone_iter_get_part(i, olen);
 }
 
 typedef struct wf_labels {
@@ -252,16 +357,16 @@ typedef struct wf_labels {
 	size_t  n;
 } wf_labels;
 
-static inline int p_wf_labels_are_fqdn(wf_labels *labels)
+INLINE int wf_labels_are_fqdn(wf_labels *labels)
 { return labels->n != 0 && labels->l[labels->n - 1][0] == 0; }
 
-static inline void p_wf_labels_cpy(wf_labels *dst, wf_labels *src)
+INLINE void wf_labels_cpy(wf_labels *dst, wf_labels *src)
 {
 	memcpy(dst->l, src->l, src->n * sizeof(src->l[0]));
 	dst->n = src->n;
 }
 
-static inline int p_wf_labels_cat(wf_labels *dst, wf_labels *src)
+INLINE int wf_labels_cat(wf_labels *dst, wf_labels *src)
 {
 	if (dst->n + src->n > 128)
 		return 0;
@@ -271,7 +376,22 @@ static inline int p_wf_labels_cat(wf_labels *dst, wf_labels *src)
 	return 1;
 }
 
-static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
+
+typedef struct zone_wf_iter {
+	zone_iter   zi;
+
+	size_t      rr_len;
+	const char *rr;
+
+	wf_labels   origin;
+	wf_labels   owner;
+	ttl_count  *orig_ttl;
+	uint32_t    ttl;
+	rr_part    *rr_type;
+	uint16_t    rr_class;
+} zone_wf_iter;
+
+int dname2wf(const char *dname, size_t len, wf_labels *labels)
 {
 	for (labels->n = 0; len; labels->n++) {
 		uint8_t *pq = labels->l[labels->n], *q = pq + 1;
@@ -292,11 +412,11 @@ static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
 					*q++ = val;
 					dname += 4; len -= 4;
 				} else {
-					*q++ = dname[1];
+					*q++ = LOWER_CPY(dname[1]);
 					dname += 2; len -= 2;
 				}
 			} else {
-				*q++ = *dname++;
+				*q++ = LOWER_CPY(*dname++);
 				len--;
 			}
 		}
@@ -311,53 +431,7 @@ static int p_dname2wf(const char *dname, size_t len, wf_labels *labels)
 	return 1;
 }
 
-typedef struct ttl_count ttl_count;
-struct ttl_count {
-	uint32_t   ttl;
-	uint32_t   cnt;
-	ttl_count *nxt;
-};
-static ttl_count  ttl_counts[65536];
-static ttl_count *max_ttl;
-
-static ttl_count *p_find_ttl(uint32_t t)
-{
-	uint32_t x;
-	ttl_count *r;
-
-	if (!t)
-		return ttl_counts;
-
-	x = ((t >> 16) ^ t) * 0x119de1f3;
-	x = ((x >> 16) ^ x) * 0x119de1f3;
-	x =  (x >> 16) ^ x;
-
-	assert(x != 0);
-
-	r = &ttl_counts[x % (sizeof(ttl_counts) / sizeof(ttl_count))];
-	if (!r->ttl)
-		r->ttl = t;
-	else
-		assert(r->ttl == t);
-
-	return r;
-}
-
-typedef struct zone_wf_iter {
-	zone_iter   zi;
-
-	size_t      rr_len;
-	const char *rr;
-
-	wf_labels   origin;
-	wf_labels   owner;
-	ttl_count  *orig_ttl;
-	uint32_t    ttl;
-	rr_part    *rr_type;
-	uint16_t    rr_class;
-} zone_wf_iter;
-
-static inline uint32_t p_wf_parse_ttl(const char *str, size_t sz)
+INLINE uint32_t wf_parse_ttl(const char *str, size_t sz)
 {
 	char buf[11], *endptr;
 
@@ -368,8 +442,9 @@ static inline uint32_t p_wf_parse_ttl(const char *str, size_t sz)
 	return strtoul(buf, &endptr, 10);
 }
 
+
 zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i);
-static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
+zone_wf_iter *zone_wf_iter_process_rr(zone_wf_iter *i)
 {
 	rr_part *part = i->zi.parts;
 	ssize_t part_sz;
@@ -386,7 +461,7 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 
 	else if (part->start[0] == '@' && part_sz == 1) {
 		/* Owner is origin */
-		p_wf_labels_cpy(&i->owner, &i->origin);
+		wf_labels_cpy(&i->owner, &i->origin);
 		part++;
 		part_sz = (part->end - part->start);
 
@@ -395,13 +470,13 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 #ifndef NDEBUG
 		r =
 #endif
-		    p_dname2wf(part->start, part_sz, &i->owner);
+		    dname2wf(part->start, part_sz, &i->owner);
 		assert(r);
-		if (!p_wf_labels_are_fqdn(&i->owner)) {
+		if (!wf_labels_are_fqdn(&i->owner)) {
 #ifndef NDEBUG
 			r =
 #endif
-			    p_wf_labels_cat(&i->owner, &i->origin);
+			    wf_labels_cat(&i->owner, &i->origin);
 			assert(r);
 		}
 		part++;
@@ -414,14 +489,14 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 #ifndef NDEBUG
 		r =
 #endif
-		    p_dname2wf(part->start, part->end-part->start, &i->origin);
+		    dname2wf(part->start, part->end-part->start, &i->origin);
 		assert(r);
 		return zone_wf_iter_next(i);
 
 	} else if (part_sz == 4 && strncasecmp(part->start, "$TTL", 4) == 0) {
 		/* $TTL */
 		part++;
-		i->orig_ttl = p_find_ttl(p_wf_parse_ttl(
+		i->orig_ttl = find_ttl(wf_parse_ttl(
 		    part->start, part->end - part->start));
 		return zone_wf_iter_next(i);
 	} else {
@@ -432,8 +507,8 @@ static zone_wf_iter *p_zone_wf_iter_process_rr(zone_wf_iter *i)
 	if (part->start && part->start[0] >= '0' && part->start[0] <= '9') {
 		/* TTL */
 		ttl_count *c; 
-		i->ttl = p_wf_parse_ttl(part->start, part->end - part->start);
-		c = p_find_ttl(i->ttl);
+		i->ttl = wf_parse_ttl(part->start, part->end - part->start);
+		c = find_ttl(i->ttl);
 		if (++c->cnt > max_ttl->cnt)
 			max_ttl = c;
 		part++;
@@ -490,24 +565,25 @@ zone_wf_iter *zone_wf_iter_init(
 	if (!(i->rr = zone_iter_next(&i->zi, &i->rr_len)))
 		return NULL;
 
-	if (!p_dname2wf(origin, strlen(origin), &i->origin))
+	if (!dname2wf(origin, strlen(origin), &i->origin))
 		return NULL;
 
-	else if (!p_wf_labels_are_fqdn(&i->origin))
+	else if (!wf_labels_are_fqdn(&i->origin))
 		i->origin.l[i->origin.n++][0] = 0;
 
 	i->owner = i->origin;
-	i->orig_ttl = p_find_ttl(3600);
+	i->orig_ttl = find_ttl(3600);
 	i->rr_class = 1;
-	return p_zone_wf_iter_process_rr(i);
+	return zone_wf_iter_process_rr(i);
 }
 
 zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
 {
 	if (!(i->rr = zone_iter_next(&i->zi, &i->rr_len)))
 		return NULL;
-	return p_zone_wf_iter_process_rr(i);
+	return zone_wf_iter_process_rr(i);
 }
+
 
 typedef struct wf_dname_ref {
 	uint32_t ttl;
@@ -517,7 +593,7 @@ typedef struct wf_dname_ref {
 	uint8_t  dname[];
 } wf_dname_ref;
 
-static inline int p_wf_dname_cmp(const void *A, const void *B)
+INLINE int wf_dname_cmp(const void *A, const void *B)
 {
 	const wf_dname_ref *a = *(wf_dname_ref * const *)A;
 	const wf_dname_ref *b = *(wf_dname_ref * const *)B;
@@ -537,8 +613,8 @@ static inline int p_wf_dname_cmp(const void *A, const void *B)
 		for (lsz = *l++, rsz = *r++; lsz; l++, r++, lsz--, rsz--) {
 			if (!rsz)
 				return 0;
-			if (tolower(*l) != tolower(*r))
-				return tolower(*l) < tolower(*r) ? 1 : 0;
+			if (LOWER_CMP(*l) != LOWER_CMP(*r))
+				return LOWER_CMP(*l) < LOWER_CMP(*r) ? 1 : 0;
 		}
 		if (rsz)
 			return 1;
@@ -548,19 +624,22 @@ static inline int p_wf_dname_cmp(const void *A, const void *B)
 	return a < b ? 1 : 0;
 }
 
+
 typedef struct p_qsort_args {
 	wf_dname_ref **arr;
 	int64_t        left;
 	int64_t        right;
 } p_qsort_args;
-static void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right);
-static void *p_qsort_start(void *args)
+
+void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right);
+void *p_qsort_start(void *args)
 {
 	p_qsort_args *a = (p_qsort_args *)args;
 	p_qsort(a->arr, a->left, a->right);
 	return NULL;
 }
-static inline void p_swap(wf_dname_ref **arr, uint64_t i, uint64_t j)
+
+INLINE void swap(wf_dname_ref **arr, uint64_t i, uint64_t j)
 {
 	wf_dname_ref **a = arr + i;
 	wf_dname_ref **b = arr + j;
@@ -570,9 +649,11 @@ static inline void p_swap(wf_dname_ref **arr, uint64_t i, uint64_t j)
 	*a = *b;
 	*b = tmp;
 }
-static inline uint64_t p_average2(uint64_t a, uint64_t b)
+
+INLINE uint64_t average2(uint64_t a, uint64_t b)
 { return ((a ^ b) >> 1) + (a & b); }
-static void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right)
+
+void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right)
 {
 	int64_t i, last;
 	pthread_t lt;
@@ -580,15 +661,15 @@ static void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right)
 
 	if (left >= right)
 		return;
-	p_swap(arr, left, p_average2(left, right));
+	swap(arr, left, average2(left, right));
 	last = left;
 	for (i = left + 1; i <= right; i++) {
-		if (p_wf_dname_cmp(arr + i, arr + left)) {
+		if (wf_dname_cmp(arr + i, arr + left)) {
 			last++;
-			p_swap(arr, last, i);
+			swap(arr, last, i);
 		}
 	}
-	p_swap(arr, left, last);
+	swap(arr, left, last);
 	if (right - left > THREAD_THRESHOLD) {
 		qa.arr   = arr;
 		qa.left  = left;
@@ -604,25 +685,25 @@ static void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right)
 	p_qsort(arr, last + 1, right   );
 }
 
-typedef struct p_merger p_merger;
-typedef void (*p_merger_nexter)(p_merger *m);
-typedef void (*p_merger_destructor)(p_merger *m);
 
-struct p_merger {
+typedef struct merger merger;
+typedef void (*merger_nexter)(merger *m);
+typedef void (*merger_destructor)(merger *m);
+struct merger {
 	wf_dname_ref       *cur;
-	p_merger_nexter     next;
-	p_merger_destructor free;
+	merger_nexter     next;
+	merger_destructor free;
 };
 
-typedef struct p_combine {
-	p_merger  m;
-	p_merger *a;
-	p_merger *b;
-} p_combine;
+typedef struct combine {
+	merger  m;
+	merger *a;
+	merger *b;
+} combine;
 
-static void p_merger_next(p_merger *m)
+void merger_next(merger *m)
 {
-	p_combine *c = (p_combine *)m;
+	combine *c = (combine *)m;
 
 	if (c->m.cur == c->a->cur)
 		c->a->next(c->a);
@@ -632,13 +713,13 @@ static void p_merger_next(p_merger *m)
 	}
 	c->m.cur = c->a->cur == NULL ? (c->b->cur ? c->b->cur : NULL)
 	         : c->b->cur == NULL ?  c->a->cur
-	         : p_wf_dname_cmp(&c->a->cur, &c->b->cur) ? c->a->cur
+	         : wf_dname_cmp(&c->a->cur, &c->b->cur) ? c->a->cur
 	         : c->b->cur;
 }
 
-static void p_merger_free(p_merger *m)
+void merger_free(merger *m)
 {
-	p_combine *c = (p_combine *)m;
+	combine *c = (combine *)m;
 
 	if (c->a) {
 		c->a->free(c->a);
@@ -651,24 +732,25 @@ static void p_merger_free(p_merger *m)
 	free(c);
 }
 
-static p_merger *p_merger_new(p_merger *a, p_merger *b)
+merger *merger_new(merger *a, merger *b)
 {
-	p_combine *c = malloc(sizeof(p_combine));
+	combine *c = malloc(sizeof(combine));
 
 	assert(c != NULL);
 	c->a = a;
 	c->b = b;
 	c->m.cur = a->cur == NULL ? (b->cur ? b->cur : NULL)
 	         : b->cur == NULL ? a->cur
-	         : p_wf_dname_cmp(&a->cur, &b->cur) ? a->cur : b->cur;
-	c->m.next = p_merger_next;
-	c->m.free = p_merger_free;
+	         : wf_dname_cmp(&a->cur, &b->cur) ? a->cur : b->cur;
+	c->m.next = merger_next;
+	c->m.free = merger_free;
 	return &c->m;
 }
 
-typedef struct p_partial p_partial;
-struct p_partial {
-	p_merger       m;
+
+typedef struct part part;
+struct part {
+	merger         m;
 	pthread_t      lt;
 	wf_dname_ref **refs;
 	wf_dname_ref **ref;
@@ -680,12 +762,12 @@ struct p_partial {
 	int            tmpfd;
 	size_t         mem_sz;
 	size_t         n_refs;
-	p_partial     *prev;
+	part          *prev;
 };
 
-static void p_partial_merger_next(p_merger *m)
+void part_merger_next(merger *m)
 {
-	p_partial *p = (p_partial *)m;
+	part *p = (part *)m;
 
 	assert(m->cur == (wf_dname_ref *)p->cur);
 	p->cur = m->cur->dname + m->cur->dname_sz + 1 + m->cur->txt_sz;
@@ -707,15 +789,15 @@ static void p_partial_merger_next(p_merger *m)
 	}
 }
 
-static void p_partial_merger_free(p_merger *m)
+void part_merger_free(merger *m)
 {
-	p_partial *p = (p_partial *)m;
+	part *p = (part *)m;
 
 	assert(p->cur == NULL && p->mem != NULL
 	    && p->end != NULL && p->mem < p->end);
 
 	/**
-	 ** p->prev is freed by p_combine
+	 ** p->prev is freed by combine
 	 **
 	 *
 	 * if (p->prev) {
@@ -727,11 +809,11 @@ static void p_partial_merger_free(p_merger *m)
 	free(p);
 }
 
-static p_partial *p_partial_new()
+part *part_new()
 {
-	p_partial *p;
+	part *p;
 
-	if (!(p = malloc(sizeof(p_partial))))
+	if (!(p = malloc(sizeof(part))))
 		return NULL;
 	if (!(p->cur = p->mem = malloc(SPLIT_SIZE)))
 		return NULL;
@@ -748,10 +830,10 @@ static p_partial *p_partial_new()
 	return p;
 }
 
-static void p_partial_mktmpfn(p_partial *p, const char *fn)
+void part_mktmpfn(part *p, const char *fn)
 {
 	size_t   cnt = 0;
-	p_partial *c = p->prev;
+	part *c = p->prev;
 	const char *s = strrchr(fn, '/');
 
 	if (!s)
@@ -764,9 +846,9 @@ static void p_partial_mktmpfn(p_partial *p, const char *fn)
 	        , "/tmp/sort-zone-%s-%.2zu-XXXXXX", s, cnt);
 }
 
-static void *p_partial_sort_save_(void *arg)
+void *part_sort_save_(void *arg)
 {
-	p_partial *p = (p_partial *)arg;
+	part *p = (part *)arg;
 	wf_dname_ref **ref;
 
 	p->mem_sz = p->cur - p->mem;
@@ -777,13 +859,13 @@ static void *p_partial_sort_save_(void *arg)
 	fprintf(stderr, "Saving  %zu bytes in %zu names at %zd\n"
 	              , p->mem_sz, p->n_refs, time(NULL) - start_t);
 	if ((p->tmpfd = mkstemp(p->tmpfn)) < 0)
-		perror("Could not create temporary partial file");
+		perror("Could not create temporary part file");
 
 	FILE *f = fdopen(p->tmpfd, "w");
 	for ( ref = p->refs; ref < p->ref; ref++) {
 		if (!fwrite(*ref, sizeof(wf_dname_ref) + (*ref)->dname_sz + 1
 		                                       + (*ref)->txt_sz, 1, f))
-			perror("Error writing to temporary partial file");
+			perror("Error writing to temporary part file");
 	}
 	fclose(f);
 	p->tmpfd = -1;
@@ -796,27 +878,47 @@ static void *p_partial_sort_save_(void *arg)
 	return NULL;
 }
 
-static inline void p_partial_sort_save(p_partial *p, const char *fn)
+INLINE void part_sort_save(part *p, const char *fn)
 {
-	p_partial_mktmpfn(p, fn);
-	p_partial_sort_save_(p);
+	part_mktmpfn(p, fn);
+	part_sort_save_(p);
 }
 
-static inline p_partial *p_partial_next(p_partial *p, const char *fn)
+INLINE part *part_next(part *p, const char *fn)
 {
-	p_partial *n;
+	part *n;
 
-	if ((n = p_partial_new(p)))
+	if ((n = part_new(p)))
 		n->prev = p;
 
-	p_partial_mktmpfn(p, fn);
+	part_mktmpfn(p, fn);
 	if (pthread_create( &p->lt, PTHREAD_CREATE_JOINABLE
-	                  , p_partial_sort_save_, (void *)p))
-		p_partial_sort_save_(p);
+	                  , part_sort_save_, (void *)p))
+		part_sort_save_(p);
 	return n;
 }
 
-static inline void p_print_dname(const uint8_t *dname, uint8_t dname_sz, FILE *f)
+
+typedef struct zone_writer {
+	uint32_t origin_ttl;
+	FILE    *f;
+	uint8_t  prev_dname_sz;
+	uint8_t  origin_sz;
+	const uint8_t *prev_dname;
+} zone_writer;
+
+void zone_writer_init(zone_writer *zw, uint32_t max_ttl, FILE *f)
+{
+	assert(zw);
+	zw->origin_ttl    = max_ttl;
+	zw->f             = f;
+	zw->prev_dname_sz = 0;
+	zw->origin_sz     = 0;
+	zw->prev_dname    = NULL;
+	fprintf(f, "$TTL %" PRIu32 "\n", max_ttl);
+}
+
+void print_dname(const uint8_t *dname, uint8_t dname_sz, FILE *f)
 {
 	const uint8_t  *labels[128];
 	const uint8_t  *end = dname + dname_sz;
@@ -854,15 +956,7 @@ static inline void p_print_dname(const uint8_t *dname, uint8_t dname_sz, FILE *f
 	}
 }
 
-typedef struct p_zone_writer {
-	uint32_t origin_ttl;
-	FILE    *f;
-	uint8_t  prev_dname_sz;
-	uint8_t  origin_sz;
-	const uint8_t *prev_dname;
-} p_zone_writer;
-
-static inline int p_dname_equal(const uint8_t *l, const uint8_t *r, size_t sz)
+INLINE int dname_equal(const uint8_t *l, const uint8_t *r, size_t sz)
 {
 	while (sz--) {
 		size_t i;
@@ -872,29 +966,18 @@ static inline int p_dname_equal(const uint8_t *l, const uint8_t *r, size_t sz)
 		else if (!*l)
 			return 1;
 		for (i = *l++, r++; sz && i > 0; i--, l++, r++, sz--)
-			if (*l != *r && tolower(*l) != tolower(*r))
+			if (*l != *r && LOWER_CMP(*l) != LOWER_CMP(*r))
 				return 0;
 	}
 	return 1;
 }
 
-static void p_zone_writer_init(p_zone_writer *zw, uint32_t max_ttl, FILE *f)
-{
-	assert(zw);
-	zw->origin_ttl    = max_ttl;
-	zw->f             = f;
-	zw->prev_dname_sz = 0;
-	zw->origin_sz     = 0;
-	zw->prev_dname    = NULL;
-	fprintf(f, "$TTL %" PRIu32 "\n", max_ttl);
-}
-
-static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
+void zone_writer_next(zone_writer *zw, const wf_dname_ref *r)
 {
 	if (zw->origin_sz != r->origin_sz) {
 		zw->origin_sz = r->origin_sz;
 		fputs("$ORIGIN ", zw->f);
-		p_print_dname(r->dname, zw->origin_sz, zw->f);
+		print_dname(r->dname, zw->origin_sz, zw->f);
 		fputs(".\n", zw->f);
 	}
 	if (r->dname_sz != zw->prev_dname_sz) {
@@ -902,13 +985,13 @@ static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
 		if (r->dname_sz == zw->origin_sz)
 			fputs("@ ", zw->f);
 		else {
-			p_print_dname( r->dname + zw->origin_sz
+			print_dname( r->dname + zw->origin_sz
 				   , r->dname_sz - zw->origin_sz
 				   , zw->f);
 			putc(' ', zw->f);
 		}
 	} else if (zw->prev_dname
-	       &&  p_dname_equal( r->dname   + zw->origin_sz
+	       &&  dname_equal( r->dname   + zw->origin_sz
 			        , zw->prev_dname + zw->origin_sz
 			        , zw->prev_dname_sz - zw->origin_sz ))
 		putc(' ', zw->f);
@@ -916,7 +999,7 @@ static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
 	else if (zw->prev_dname_sz == zw->origin_sz)
 		fputs("@ ", zw->f);
 	else {
-		p_print_dname( r->dname + zw->origin_sz
+		print_dname( r->dname + zw->origin_sz
 			   , zw->prev_dname_sz - zw->origin_sz
 			   , zw->f);
 		putc(' ', zw->f);
@@ -930,24 +1013,23 @@ static inline void p_zone_writer_next(p_zone_writer *zw, const wf_dname_ref *r)
 
 int main(int argc, char **argv)
 {
-	zone_wf_iter  zi_spc, *zi = NULL;
+	zone_wf_iter zi_spc, *zi = NULL;
 #ifndef NDEBUG
-	int           s;
+	int          s;
 #endif
-	p_partial    *p = NULL;
-	char          outfn[4096];
-	FILE         *f;
-	p_zone_writer zw;
-	size_t      n_ps;
-	p_partial    *c;
-	p_merger     *ms[64], *m;
+	part     *p = NULL;
+	char         outfn[4096];
+	FILE        *f;
+	zone_writer  zw;
+	size_t       n_ps;
+	part     *c;
+	merger      *ms[64], *m;
 
 	/* Initialize globals */
-	time(&start_t);
 	pagesize          = sysconf(_SC_PAGESIZE) * 64;
 	pagesize_preserve = sysconf(_SC_PAGESIZE) *  1;
-	memset(ttl_counts, 0, sizeof(ttl_counts));
-	max_ttl = p_find_ttl(3600);
+	start_t           = time(NULL);
+	max_ttl           = find_ttl(3600);
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
@@ -957,7 +1039,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Could not open zone\n");
 		return EXIT_FAILURE;
 	}
-	if (!(p = p_partial_new())) {
+	if (!(p = part_new())) {
 		fprintf(stderr, "Memory allocation error\n");
 		return EXIT_FAILURE;
 	}
@@ -967,8 +1049,8 @@ int main(int argc, char **argv)
 
 		if (( p->ref >= p->last_ref
 		    ||  p->cur + 1024 + zi->rr_len > p->end)
-		&& (!(p = p_partial_next(p, argv[1])))) {
-			fprintf(stderr, "Could not create next partial\n");
+		&& (!(p = part_next(p, argv[1])))) {
+			fprintf(stderr, "Could not create next part\n");
 			return EXIT_FAILURE;
 		}
 		(*p->ref)         = (void *)p->cur;
@@ -995,24 +1077,25 @@ int main(int argc, char **argv)
 	s = 
 #endif
 	    snprintf(outfn, sizeof(outfn), "%s.sorted", argv[1]);
+	assert(s < sizeof(outfn));
 	if (!(f = fopen(outfn, "w")))
 		perror("Could not create output file");
-	p_zone_writer_init(&zw, max_ttl->ttl, f);
-	assert(s < sizeof(outfn));
+	zone_writer_init(&zw, max_ttl->ttl, f);
 	if (!p->prev) {
 		wf_dname_ref **ref;
 		/* Just one part, just sort and save this single part */
 		p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
 		for (ref = p->refs; ref < p->ref; ref++) {
-			p_zone_writer_next(&zw, *ref);
+			zone_writer_next(&zw, *ref);
 		}
 		fclose(f);
 		free(p->mem);
 		free(p->refs);
 		free(p);
+		cleanup_ttl_counts();
 		return 0;
 	}
-	p_partial_sort_save(p, argv[1]);
+	part_sort_save(p, argv[1]);
 
 	for (n_ps = 0, c = p; c; c = c->prev) {
 		pthread_join(c->lt, NULL);
@@ -1023,24 +1106,25 @@ int main(int argc, char **argv)
 		assert(c->mem != MAP_FAILED);
 		c->end = c->mem + c->mem_sz;
 		c->m.cur = (wf_dname_ref *)c->cur;
-		c->m.next = p_partial_merger_next;
-		c->m.free = p_partial_merger_free;
+		c->m.next = part_merger_next;
+		c->m.free = part_merger_free;
 		ms[n_ps++] = &c->m;
 	}
 	while (n_ps > 1) {
 		size_t i, j;
 		for (i = 0, j = 0; i < n_ps; i += 2, j++) {
 			if (i + 1 < n_ps)
-				ms[j] = p_merger_new(ms[i], ms[i + 1]);
+				ms[j] = merger_new(ms[i], ms[i + 1]);
 
 			else	ms[j] = ms[i];
 		}
 		n_ps = j;
 	}
 	for (m = ms[0]; m->cur; m->next(m)) {
-		p_zone_writer_next(&zw, m->cur);
+		zone_writer_next(&zw, m->cur);
 	}
 	fclose(f);
 	m->free(m);
+	cleanup_ttl_counts();
 	return 0;
 }
