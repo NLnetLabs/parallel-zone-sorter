@@ -360,6 +360,27 @@ typedef struct wf_labels {
 INLINE int wf_labels_are_fqdn(wf_labels *labels)
 { return labels->n != 0 && labels->l[labels->n - 1][0] == 0; }
 
+INLINE int wf_labels_equal(wf_labels *a, wf_labels *b)
+{
+	size_t i;
+
+	if (a->n != b->n)
+		return 0;
+
+	for (i = 0; i < a->n; i++) {
+		uint8_t *l, *r, j;
+
+		l = a->l[i];
+		r = b->l[i];
+		if (*l != *r)
+			return 0;
+		for (j = *l++, r++; j; j--, l++, r++)
+			if (*l != *r && LOWER_CMP(*l) != LOWER_CMP(*r))
+				return 0;
+	}
+	return 1;
+}
+
 INLINE void wf_labels_cpy(wf_labels *dst, wf_labels *src)
 {
 	memcpy(dst->l, src->l, src->n * sizeof(src->l[0]));
@@ -385,6 +406,7 @@ typedef struct zone_wf_iter {
 
 	wf_labels   origin;
 	wf_labels   owner;
+	int         same; /* owner & origin same as in previous iteration */
 	ttl_count  *orig_ttl;
 	uint32_t    ttl;
 	rr_part    *rr_type;
@@ -393,6 +415,9 @@ typedef struct zone_wf_iter {
 
 int dname2wf(const char *dname, size_t len, wf_labels *labels)
 {
+	size_t old_n = labels->n;
+	int same = 1;
+
 	for (labels->n = 0; len; labels->n++) {
 		uint8_t *pq = labels->l[labels->n], *q = pq + 1;
 
@@ -409,29 +434,45 @@ int dname2wf(const char *dname, size_t len, wf_labels *labels)
 					val = (dname[1] - '0') * 100
 					    + (dname[2] - '0') *  10
 					    + (dname[3] - '0');
-					*q++ = val;
+					if (*q != val) {
+						same = 0;
+						*q = val;
+					}
+					q++;
 					dname += 4; len -= 4;
 				} else {
-					*q++ = LOWER_CPY(dname[1]);
+					if (*q != LOWER_CPY(dname[1])) {
+						same = 0;
+						*q = LOWER_CPY(dname[1]);
+					}
+					q++;
 					dname += 2; len -= 2;
 				}
 			} else {
-				*q++ = LOWER_CPY(*dname++);
+				if (*q != LOWER_CPY(*dname)) {
+					same = 0;
+					*q = LOWER_CPY(*dname);
+				}
+				q++;
+				dname += 1;
 				len--;
 			}
 		}
 		if ((q - pq) - 1 == 0)
-			return 1;
+			break;
 
-		*pq = (q - pq) - 1;
+		if (*pq != (q - pq) - 1) {
+			same = 0;
+			*pq = (q - pq) - 1;
+		}
 		if (len) {
-			// assert(*dname == '.');
+			/* assert(*dname == '.'); */
 			dname++; len--;
 			if (len == 0)
 				labels->l[++labels->n][0] = 0;
 		}
 	}
-	return 1;
+	return same ? (old_n == labels->n ? 1 : 2) : 0;
 }
 
 INLINE uint32_t wf_parse_ttl(const char *str, size_t sz)
@@ -451,36 +492,31 @@ zone_wf_iter *zone_wf_iter_process_rr(zone_wf_iter *i)
 {
 	rr_part *part = i->zi.parts;
 	ssize_t part_sz;
-#ifndef NDEBUG
-	int r;
-#endif
 
 	part_sz = (part->end - part->start);
 	if (part->start > i->rr) {
-		; /* pass: Owner is previous owner */
+		i->same = 1; /* pass: Owner is previous owner */
 
 	} else if (part_sz <= 0)
 		return zone_wf_iter_next(i); /* Empty line? */
 
 	else if (part->start[0] == '@' && part_sz == 1) {
 		/* Owner is origin */
+		i->same = wf_labels_equal(&i->owner, &i->origin);
 		wf_labels_cpy(&i->owner, &i->origin);
 		part++;
 		part_sz = (part->end - part->start);
 
 	} else if (part->start[0] != '$') {
 		/* Regular owner name */
-#ifndef NDEBUG
-		r =
-#endif
-		    dname2wf(part->start, part_sz, &i->owner);
-		assert(r);
-		if (!wf_labels_are_fqdn(&i->owner)) {
-#ifndef NDEBUG
-			r =
-#endif
-			    wf_labels_cat(&i->owner, &i->origin);
-			assert(r);
+		size_t old_n = i->owner.n;
+		int s = dname2wf(part->start, part_sz, &i->owner);
+
+		if (wf_labels_are_fqdn(&i->owner))
+			i->same = s == 1;
+		else {
+			wf_labels_cat(&i->owner, &i->origin);
+			i->same = s == 2 && old_n == i->owner.n;
 		}
 		part++;
 		part_sz = (part->end - part->start);
@@ -489,11 +525,7 @@ zone_wf_iter *zone_wf_iter_process_rr(zone_wf_iter *i)
 	       && strncasecmp(part->start, "$ORIGIN", 7) == 0) {
 		/* $ORIGIN */
 		part++;
-#ifndef NDEBUG
-		r =
-#endif
-		    dname2wf(part->start, part->end-part->start, &i->origin);
-		assert(r);
+		dname2wf(part->start, part->end-part->start, &i->origin);
 		return zone_wf_iter_next(i);
 
 	} else if (part_sz == 4 && strncasecmp(part->start, "$TTL", 4) == 0) {
@@ -568,15 +600,15 @@ zone_wf_iter *zone_wf_iter_init(
 	if (!(i->rr = zone_iter_next(&i->zi, &i->rr_len)))
 		return NULL;
 
-	if (!dname2wf(origin, strlen(origin), &i->origin))
-		return NULL;
-
-	else if (!wf_labels_are_fqdn(&i->origin))
+	memset(&i->owner, 0, sizeof(i->owner));
+	memset(&i->origin, 0, sizeof(i->origin));
+	dname2wf(origin, strlen(origin), &i->origin);
+	if (!wf_labels_are_fqdn(&i->origin))
 		i->origin.l[i->origin.n++][0] = 0;
 
-	i->owner = i->origin;
 	i->orig_ttl = find_ttl(3600);
 	i->rr_class = 1;
+	i->same = 0;
 	return zone_wf_iter_process_rr(i);
 }
 
@@ -587,6 +619,8 @@ zone_wf_iter *zone_wf_iter_next(zone_wf_iter *i)
 	return zone_wf_iter_process_rr(i);
 }
 
+#define BIT32      0x80000000
+#define BIT32_MASK 0x7FFFFFFF
 
 typedef struct wf_dname_ref {
 	uint32_t ttl;
@@ -693,7 +727,7 @@ typedef struct merger merger;
 typedef void (*merger_nexter)(merger *m);
 typedef void (*merger_destructor)(merger *m);
 struct merger {
-	wf_dname_ref       *cur;
+	wf_dname_ref     *cur;
 	merger_nexter     next;
 	merger_destructor free;
 };
@@ -770,10 +804,18 @@ struct part {
 
 void part_merger_next(merger *m)
 {
+	uint32_t ttl;
 	part *p = (part *)m;
+	wf_dname_ref *r = (void *)p->cur;
 
-	assert(m->cur == (wf_dname_ref *)p->cur);
-	p->cur = m->cur->dname + m->cur->dname_sz + 1 + m->cur->txt_sz;
+	assert(m->cur == r);
+	ttl = r->ttl;
+	r = (void *)(r->dname + r->dname_sz + 1 + r->txt_sz);
+	while (ttl & BIT32) {
+		ttl = r->ttl;
+		r = (void *)(r->dname + r->txt_sz);
+	}
+	p->cur = (void *)r;
 	if (p->cur >= p->end) {
 		p->cur = NULL;
 		close(p->tmpfd);
@@ -855,19 +897,28 @@ void *part_sort_save_(void *arg)
 
 	p->mem_sz = p->cur - p->mem;
 	p->n_refs = p->ref - p->refs;
-	fprintf(stderr, "Sorting %zu bytes in %zu names at %zd\n"
+	fprintf(stderr, "Sorting %zu bytes in %zu RRs at %zd\n"
 	              , p->mem_sz, p->n_refs, time(NULL) - start_t);
 	p_qsort(p->refs, 0, (p->ref - p->refs) - 1);
-	fprintf(stderr, "Saving  %zu bytes in %zu names at %zd\n"
+	fprintf(stderr, "Saving  %zu bytes in %zu RRs at %zd\n"
 	              , p->mem_sz, p->n_refs, time(NULL) - start_t);
 	if ((p->tmpfd = mkstemp(p->tmpfn)) < 0)
 		perror("Could not create temporary part file");
 
 	FILE *f = fdopen(p->tmpfd, "w");
 	for ( ref = p->refs; ref < p->ref; ref++) {
-		if (!fwrite(*ref, sizeof(wf_dname_ref) + (*ref)->dname_sz + 1
-		                                       + (*ref)->txt_sz, 1, f))
+		wf_dname_ref *r = *ref;
+		uint8_t *txt_pos = r->dname + r->dname_sz + 1;
+
+		if (!fwrite(r, sizeof(wf_dname_ref) + r->dname_sz + 1
+		                                    + r->txt_sz, 1, f))
 			perror("Error writing to temporary part file");
+
+		while (r->ttl & BIT32) {
+			r = (void *)(txt_pos + r->txt_sz);
+			txt_pos = r->dname;
+			fwrite(r, sizeof(wf_dname_ref) + r->txt_sz, 1, f);
+		}
 	}
 	fclose(f);
 	p->tmpfd = -1;
@@ -875,7 +926,7 @@ void *part_sort_save_(void *arg)
 	free(p->refs);
 	p->mem = p->cur = p->end = NULL;
 	p->refs = p->ref = p->last_ref = NULL;
-	fprintf(stderr, "Saved   %zu bytes in %zu names at %zd\n"
+	fprintf(stderr, "Saved   %zu bytes in %zu RRs at %zd\n"
 	              , p->mem_sz, p->n_refs, time(NULL) - start_t);
 	return NULL;
 }
@@ -976,6 +1027,9 @@ INLINE int dname_equal(const uint8_t *l, const uint8_t *r, size_t sz)
 
 void zone_writer_next(zone_writer *zw, const wf_dname_ref *r)
 {
+	uint32_t ttl;
+	const uint8_t *txt_pos;
+
 	if (zw->origin_sz != r->origin_sz) {
 		zw->origin_sz = r->origin_sz;
 		fputs("$ORIGIN ", zw->f);
@@ -1007,25 +1061,36 @@ void zone_writer_next(zone_writer *zw, const wf_dname_ref *r)
 		putc(' ', zw->f);
 	}
 	zw->prev_dname = r->dname;
-	if (r->ttl != zw->origin_ttl)
-		fprintf(zw->f, "%" PRIu32 " ", r->ttl);
-	fwrite(r->dname + r->dname_sz + 1, r->txt_sz, 1, zw->f);
-	putc('\n', zw->f);
+	txt_pos = r->dname + r->dname_sz + 1;
+	for (;;) {
+		ttl = r->ttl;
+		if ((ttl & BIT32_MASK) != zw->origin_ttl)
+			fprintf(zw->f, "%" PRIu32 " ", (ttl & BIT32_MASK));
+		fwrite(txt_pos, r->txt_sz, 1, zw->f);
+		putc('\n', zw->f);
+		if (ttl & BIT32) {
+			r = (void *)(txt_pos + r->txt_sz);
+			txt_pos = r->dname;
+			putc(' ', zw->f);
+		} else
+			break;
+	}
 }
 
 int main(int argc, char **argv)
 {
-	zone_wf_iter zi_spc, *zi = NULL;
+	zone_wf_iter  zi_spc, *zi = NULL;
 #ifndef NDEBUG
-	int          s;
+	int           s;
 #endif
-	part     *p = NULL;
-	char         outfn[4096];
-	FILE        *f;
-	zone_writer  zw;
-	size_t       n_ps;
-	part     *c;
-	merger      *ms[64], *m;
+	part         *p = NULL;
+	char          outfn[4096];
+	FILE         *f;
+	zone_writer   zw;
+	size_t        n_ps;
+	part         *c;
+	merger       *ms[64], *m;
+	wf_dname_ref *prev_ref = NULL;
 
 	/* Initialize globals */
 	pagesize          = sysconf(_SC_PAGESIZE) * 64;
@@ -1048,31 +1113,43 @@ int main(int argc, char **argv)
 	while (zi) {
 		ssize_t n;
 		uint8_t *dname;
+		wf_dname_ref *ref;
 
-		if (( p->ref >= p->last_ref
-		    ||  p->cur + 1024 + zi->rr_len > p->end)
-		&& (!(p = part_next(p, argv[1])))) {
-			fprintf(stderr, "Could not create next part\n");
-			return EXIT_FAILURE;
+		if (p->ref >= p->last_ref
+		||  p->cur + 1024 + zi->rr_len > p->end) {
+			prev_ref = NULL;
+			if (!(p = part_next(p, argv[1]))) {
+				fprintf(stderr, "Could not create next part\n");
+				return EXIT_FAILURE;
+			}
 		}
-		(*p->ref)         = (void *)p->cur;
-		(*p->ref)->txt_sz =  zi->rr_len
-		                  - (zi->rr_type->start - zi->rr);
-		(*p->ref)->ttl    =  zi->ttl;
-		dname = (*p->ref)->dname;
+		ref         = (void *)p->cur;
+		ref->txt_sz =  zi->rr_len
+		            - (zi->rr_type->start - zi->rr);
+		ref->ttl    =  zi->ttl;
 
+		if (prev_ref && zi->same) {
+			ref->dname_sz = 0;
+			ref->origin_sz = 255;
+			memcpy(ref->dname, zi->rr_type->start, ref->txt_sz);
+			p->cur = ref->dname + ref->txt_sz;
+			prev_ref->ttl |= BIT32;
+			prev_ref = ref;
+			zi = zone_wf_iter_next(zi);
+			continue;
+		}
+		dname = ref->dname;
 		for (n = (ssize_t)zi->owner.n - 2; n >= 0; n--) {
 			memcpy(dname, zi->owner.l[n], zi->owner.l[n][0] + 1);
 			dname += zi->owner.l[n][0] + 1;
 			if (n == zi->owner.n - zi->origin.n)
-				(*p->ref)->origin_sz = dname - (*p->ref)->dname;
+				ref->origin_sz = dname - ref->dname;
 		}
-		(*p->ref)->dname_sz = dname - (*p->ref)->dname;
+		ref->dname_sz = dname - ref->dname;
 		*dname++ = 0;
-		p->cur = dname;
-		memcpy(p->cur, zi->rr_type->start, (*p->ref)->txt_sz);
-		p->cur += (*p->ref)->txt_sz;
-		p->ref += 1;
+		memcpy(dname, zi->rr_type->start, ref->txt_sz);
+		p->cur = dname + ref->txt_sz;
+		*p->ref++ = prev_ref = ref;
 		zi = zone_wf_iter_next(zi);
 	}
 #ifndef NDEBUG
