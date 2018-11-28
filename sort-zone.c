@@ -420,6 +420,9 @@ int dname2wf(const char *dname, size_t len, wf_labels *labels)
 				len--;
 			}
 		}
+		if ((q - pq) - 1 == 0)
+			return 1;
+
 		*pq = (q - pq) - 1;
 		if (len) {
 			// assert(*dname == '.');
@@ -901,8 +904,8 @@ INLINE part *part_next(part *p, const char *fn)
 typedef struct zone_writer {
 	uint32_t origin_ttl;
 	FILE    *f;
-	uint8_t  prev_dname_sz;
-	uint8_t  origin_sz;
+	ssize_t  prev_dname_sz;
+	ssize_t  origin_sz;
 	const uint8_t *prev_dname;
 } zone_writer;
 
@@ -911,8 +914,8 @@ void zone_writer_init(zone_writer *zw, uint32_t max_ttl, FILE *f)
 	assert(zw);
 	zw->origin_ttl    = max_ttl;
 	zw->f             = f;
-	zw->prev_dname_sz = 0;
-	zw->origin_sz     = 0;
+	zw->prev_dname_sz = -1;
+	zw->origin_sz     = -1;
 	zw->prev_dname    = NULL;
 	fprintf(f, "$TTL %" PRIu32 "\n", max_ttl);
 }
