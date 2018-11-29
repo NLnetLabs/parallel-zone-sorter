@@ -724,7 +724,7 @@ void p_qsort(wf_dname_ref **arr, int64_t left, int64_t right)
 
 
 typedef struct merger merger;
-typedef void (*merger_nexter)(merger *m);
+typedef intptr_t (*merger_nexter)(merger *m, intptr_t release);
 typedef void (*merger_destructor)(merger *m);
 struct merger {
 	wf_dname_ref     *cur;
@@ -733,25 +733,33 @@ struct merger {
 };
 
 typedef struct combine {
-	merger  m;
-	merger *a;
-	merger *b;
+	merger   m;
+	merger  *a;
+	intptr_t rel_a;
+	merger  *b;
+	intptr_t rel_b;
 } combine;
 
-void merger_next(merger *m)
+intptr_t merger_next(merger *m, intptr_t release)
 {
 	combine *c = (combine *)m;
 
+	if (!(release == c->rel_a || release == c->rel_b)) {
+		fprintf(stderr, "rel: %zu, a: %zu, b: %zu\n", release, c->rel_a, c->rel_b);
+	}
 	if (c->m.cur == c->a->cur)
-		c->a->next(c->a);
+		c->rel_a = c->a->next(c->a, c->rel_a);
 	else {
 		assert(c->m.cur == c->b->cur);
-		c->b->next(c->b);
+		c->rel_b = c->b->next(c->b, c->rel_b);
 	}
 	c->m.cur = c->a->cur == NULL ? (c->b->cur ? c->b->cur : NULL)
 	         : c->b->cur == NULL ?  c->a->cur
 	         : wf_dname_cmp(&c->a->cur, &c->b->cur) ? c->a->cur
 	         : c->b->cur;
+
+	return c->m.cur == c->a->cur ? c->rel_a
+	     : c->m.cur == c->b->cur ? c->rel_b : 0;
 }
 
 void merger_free(merger *m)
@@ -776,6 +784,8 @@ merger *merger_new(merger *a, merger *b)
 	assert(c != NULL);
 	c->a = a;
 	c->b = b;
+	c->rel_a = 0;
+	c->rel_b = 0;
 	c->m.cur = a->cur == NULL ? (b->cur ? b->cur : NULL)
 	         : b->cur == NULL ? a->cur
 	         : wf_dname_cmp(&a->cur, &b->cur) ? a->cur : b->cur;
@@ -802,11 +812,12 @@ struct part {
 	part          *prev;
 };
 
-void part_merger_next(merger *m)
+intptr_t part_merger_next(merger *m, intptr_t release)
 {
 	uint32_t ttl;
 	part *p = (part *)m;
 	wf_dname_ref *r = (void *)p->cur;
+	uint8_t *rel = (void *)release;
 
 	assert(m->cur == r);
 	ttl = r->ttl;
@@ -821,17 +832,20 @@ void part_merger_next(merger *m)
 		close(p->tmpfd);
 		unlink(p->tmpfn);
 		m->cur = NULL;
-		return;
+		return 0;
 	}
-	m->cur = (wf_dname_ref *)p->cur;
-	while (p->cur - p->mem > pagesize) {
-		size_t n = (p->cur - p->mem) / pagesize;
+
+	/* Release stuff */
+	assert(release == 0 || (rel >= p->mem && rel < p->end));
+	while (rel - p->mem > pagesize) {
+		size_t n = (rel - p->mem) / pagesize;
 
 		n *= pagesize;
 		n -= pagesize_preserve;
 		munmap(p->mem, n);
 		p->mem += n;
 	}
+	return (intptr_t)(m->cur = (wf_dname_ref *)p->cur);
 }
 
 void part_merger_free(merger *m)
@@ -854,18 +868,18 @@ void part_merger_free(merger *m)
 	free(p);
 }
 
-part *part_new()
+part *part_new(size_t split_size)
 {
 	part *p;
 
 	if (!(p = malloc(sizeof(part))))
 		return NULL;
-	if (!(p->cur = p->mem = malloc(SPLIT_SIZE)))
+	if (!(p->cur = p->mem = malloc(split_size)))
 		return NULL;
-	else	p->end = p->mem + SPLIT_SIZE;
-	if (!(p->ref = p->refs= malloc(SPLIT_SIZE/32*sizeof(wf_dname_ref *))))
+	else	p->end = p->mem + split_size;
+	if (!(p->ref = p->refs= malloc(split_size / 32 * sizeof(wf_dname_ref *))))
 		return NULL;
-	else	p->last_ref = &p->refs[SPLIT_SIZE/32];
+	else	p->last_ref = &p->refs[split_size / 32];
 	strcpy(p->tmpfn, "/tmp/sort-zone-XXXXXX");
 	p->tmpfd = -1;
 	p->mem_sz = 0;
@@ -937,11 +951,11 @@ INLINE void part_sort_save(part *p, const char *fn)
 	part_sort_save_(p);
 }
 
-INLINE part *part_next(part *p, const char *fn)
+INLINE part *part_next(part *p, const char *fn, size_t split_size)
 {
 	part *n;
 
-	if ((n = part_new(p)))
+	if ((n = part_new(split_size)))
 		n->prev = p;
 
 	part_mktmpfn(p, fn);
@@ -1091,6 +1105,8 @@ int main(int argc, char **argv)
 	part         *c;
 	merger       *ms[64], *m;
 	wf_dname_ref *prev_ref = NULL;
+	intptr_t      release;
+	size_t        split_size = SPLIT_SIZE;
 
 	/* Initialize globals */
 	pagesize          = sysconf(_SC_PAGESIZE) * 64;
@@ -1106,7 +1122,15 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Could not open zone\n");
 		return EXIT_FAILURE;
 	}
-	if (!(p = part_new())) {
+	if (zi->zi.end - zi->zi.text > split_size) {
+		size_t n;
+
+	       	split_size = (zi->zi.end - zi->zi.text)
+		           / sysconf(_SC_NPROCESSORS_ONLN);
+		n = split_size / pagesize;
+		split_size = (n + 1) * pagesize;
+	}
+	if (!(p = part_new(split_size))) {
 		fprintf(stderr, "Memory allocation error\n");
 		return EXIT_FAILURE;
 	}
@@ -1118,7 +1142,7 @@ int main(int argc, char **argv)
 		if (p->ref >= p->last_ref
 		||  p->cur + 1024 + zi->rr_len > p->end) {
 			prev_ref = NULL;
-			if (!(p = part_next(p, argv[1]))) {
+			if (!(p = part_next(p, argv[1], split_size))) {
 				fprintf(stderr, "Could not create next part\n");
 				return EXIT_FAILURE;
 			}
@@ -1199,7 +1223,8 @@ int main(int argc, char **argv)
 		}
 		n_ps = j;
 	}
-	for (m = ms[0]; m->cur; m->next(m)) {
+	release = 0;
+	for (m = ms[0]; m->cur; release = m->next(m, release)) {
 		zone_writer_next(&zw, m->cur);
 	}
 	fclose(f);
