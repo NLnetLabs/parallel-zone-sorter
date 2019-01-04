@@ -35,28 +35,22 @@
 
 int main(int argc, char **argv)
 {
+	zonefile_settings settings = ZONEFILE_DEFAULT_SETTINGS;
 	zonefile_iter zi_spc, *zi = NULL;
-	char origin_spc[1024];
-	/* char owner_spc[1024]; */
 	size_t rr_count;
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
-	if (!(zi = zonefile_iter_init_fn( &zi_spc, argv[1] ))) {
-		perror("Could not open zonefile");
-		return EXIT_FAILURE;
-	}
-	zonefile_iter_set_origin_spc(zi, origin_spc, sizeof(origin_spc));
-	/* zonefile_iter_set_owner_spc(zi, owner_spc, sizeof(owner_spc)); */
 	if (argc == 3)
-		zonefile_iter_set_origin(zi, argv[2], 0);
+		settings.origin = argv[2];
+
 	rr_count = 0;
-	while (zi) {
-		rr_count += 1;
-		zi = zonefile_iter_next(zi);
-	}
+	for ( zi = zonefile_iter_init_fn_( &zi_spc, argv[1], &settings)
+	    ; zi ; zi = zonefile_iter_next(zi))
+		rr_count++;
+
 	printf("Counted %zu RRs in zone %s\n", rr_count, argv[1]);
 	return EXIT_SUCCESS;
 }

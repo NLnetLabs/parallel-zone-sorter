@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-Ofast -Wall -Wpedantic -Werror -pg
-#CFLAGS=-Wall -Wpedantic -Werror -pg
+#CFLAGS=-Wall -Wpedantic -Werror -pg -g
 LDFLAGS=-pg
-PROGRAMS=sort-zone read-zone
+PROGRAMS=read-zone
 SORT_ZONE_OBJS=sort-zone.o
 READ_ZONE_OBJS=read-zone.o presentation.o
 

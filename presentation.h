@@ -43,10 +43,24 @@ typedef struct pf_piece {
 	const char *fn;
 } pf_piece;
 
+typedef struct zonefile_settings {
+	uint32_t  ttl;
+	char     *origin;
+	char     *origin_spc;
+	size_t    origin_spc_sz;
+	char     *owner_spc;
+	size_t    owner_spc_sz;
+	pf_piece *pieces;
+	size_t    n_pieces;
+} zonefile_settings;
+
+#define ZONEFILE_DEFAULT_SETTINGS {3600, "", NULL, 1024, NULL, 1024, NULL, 128}
+
 typedef struct pf_refer pf_refer;
 struct pf_refer {
 	const char *text; /* Referred to text may not be unmapped */
 	pf_refer   *next;
+	pf_refer  **prev;
 };
 
 typedef struct pf_dname {
@@ -57,6 +71,7 @@ typedef struct pf_dname {
 } pf_dname;
 
 typedef struct zonefile_iter {
+	zonefile_settings *settings;
 	const char *fn;
 	int         fd;
 
@@ -76,9 +91,9 @@ typedef struct zonefile_iter {
 	size_t      line_nr;
 
 	pf_piece   *current_piece;   /* on iter return is last piece */
+
 	pf_piece   *pieces;          /* pieces = pieces_spc */
 	size_t      n_pieces;        /* # available pieces */
-	pf_piece    pieces_spc[999]; /* TODO: dynamically grow pieces array */
 
 	pf_dname    origin;
 	pf_dname    owner;
@@ -92,24 +107,30 @@ typedef struct zonefile_iter {
 	unsigned int same_owner: 1; /* owner same as with previous RR */
 } zonefile_iter;
 
+zonefile_iter *zonefile_iter_init_text_(
+    zonefile_iter *i, const char *text, size_t text_sz, zonefile_settings *s);
 
-zonefile_iter *zonefile_iter_init_text(
-    zonefile_iter *i, const char *text, size_t text_sz);
+zonefile_iter *zonefile_iter_init_fd_(
+    zonefile_iter *i, int fd, zonefile_settings *settings);
 
-zonefile_iter *zonefile_iter_init_fd(zonefile_iter *i, int fd);
+zonefile_iter *zonefile_iter_init_fn_(
+    zonefile_iter *i, const char *fn, zonefile_settings *settings);
 
-zonefile_iter *zonefile_iter_init_fn(zonefile_iter *i, const char *fn);
+static inline zonefile_iter *zonefile_iter_init_text(
+    zonefile_iter *i, const char *text, size_t text_sz)
+{ return zonefile_iter_init_text_(i, text, text_sz, NULL); }
 
-void zonefile_iter_set_origin(
-    zonefile_iter *i, const char *origin, size_t origin_len);
+static inline zonefile_iter *zonefile_iter_init_fd(zonefile_iter *i, int fd)
+{ return zonefile_iter_init_fd_(i, fd, NULL); }
 
-void zonefile_iter_set_origin_spc(
-    zonefile_iter *i, char *origin_spc, size_t origin_spc_sz);
-
-void zonefile_iter_set_owner_spc(
-    zonefile_iter *i, char *owner_spc, size_t owner_spc_sz);
+static inline zonefile_iter *zonefile_iter_init_fn(
+    zonefile_iter *i, const char *fn)
+{ return zonefile_iter_init_fn_(i, fn, NULL); }
 
 zonefile_iter *zonefile_iter_next(zonefile_iter *i);
 
+void zonefile_iter_up_ref(zonefile_iter *i, pf_refer *r);
+
+void pf_refer_dereference(pf_refer *r);
 
 #endif /* #ifndef PRESENTATION_H_ */

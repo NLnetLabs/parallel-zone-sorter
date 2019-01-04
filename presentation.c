@@ -40,6 +40,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+static inline void p_refer_remove(pf_refer *r)
+{
+	if (!r->prev) return;
+	if ( r->next) r->next->prev = r->prev;
+	*r->prev = r->next; r->prev = NULL;
+}
+
 static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i)
 {
 	if (i->cur) {
@@ -48,36 +55,66 @@ static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i)
 		i->current_piece->start = NULL;
 		return i;
 	}
-	if (i->munmap) {
+	p_refer_remove(&i->origin.r);
+	p_refer_remove(&i->owner.r);
+	if (i->munmap && !i->refers) {
 		munmap(i->to_munmap, (i->end - i->to_munmap));
 		i->to_munmap = NULL;
 	}
 	close(i->fd);
 	i->fd = -1;
+	if (i->settings->origin_spc_sz) {
+		if (!i->settings->origin_spc
+		||   i->settings->origin_spc_sz != i->origin.spc_sz)
+			free(i->origin.spc);
+	}
+	if (i->settings->owner_spc_sz) {
+		if (!i->settings->owner_spc
+		||   i->settings->owner_spc_sz != i->owner.spc_sz)
+			free(i->owner.spc);
+	}
+	if (!i->settings->pieces
+	||   i->settings->n_pieces != i->n_pieces)
+		free(i->pieces);
 	return NULL;
+}
+
+static inline void p_zfi_munmap_(zonefile_iter *i, const char *pos)
+{
+	size_t n;
+
+	if ((pos - i->to_munmap) < i->munmap_treshold)
+		return;
+	n  =(pos - i->to_munmap) / i->munmap_treshold;
+	n *= i->munmap_treshold;
+	n -= i->munmap_preserve;
+	munmap(i->to_munmap, n);
+	i->to_munmap += n;
+}
+
+static inline void p_zfi_munmap(zonefile_iter *i)
+{
+	if (!i->munmap) return;
+
+	if (i->refers) {
+		assert(!i->line || i->refers->text < i->line);
+		p_zfi_munmap_(i, i->refers->text);
+
+	} else if (i->line)
+		p_zfi_munmap_(i, i->line);
 }
 
 static zonefile_iter *p_zfi_get_piece(zonefile_iter *i);
 static zonefile_iter *p_zfi_return(zonefile_iter *i)
 {
 	i->cur++;
-	if (i->munmap  &&  (i->line - i->to_munmap) > i->munmap_treshold) {
-		size_t n = (i->line - i->to_munmap) / i->munmap_treshold;
-
-		n *= i->munmap_treshold;
-		n -= i->munmap_preserve;
-
-		munmap(i->to_munmap, n);
-		i->to_munmap += n;
-	}
+	p_zfi_munmap(i);
 	if (i->current_piece == i->pieces) {
 		/* Nothing, so process next line*/
 		i->line = i->cur;
 		return i->line ? p_zfi_get_piece(i) : p_zfi_at_end(i);
 	}
-
 	i->current_piece->start = NULL;
-
 	return i;
 }
 
@@ -272,11 +309,31 @@ static inline uint32_t pf_ttl2u32(const char *pf_ttl, size_t pf_ttl_len)
 	return strtoul(buf, &endptr, 10);
 }
 
-static inline void p_zfi_set_pf_dname(
-    zonefile_iter *i, pf_dname *dname, pf_piece *piece)
+static inline void p_refer_insert(pf_refer **refers, pf_refer *r)
 {
-	dname->r.text = piece->start;
-	dname->len = piece->end - piece->start;
+	if (!*refers || r->text < (*refers)->text) {
+		r->next = *refers;
+		r->prev =  refers;
+		*refers =  r;
+	} else
+		p_refer_insert(&(*refers)->next, r);
+}
+
+static inline void p_zfi_set_dname(
+    zonefile_iter *i, pf_dname *dname, const char *text, size_t len)
+{
+	p_refer_remove(&dname->r);
+	dname->len = len;
+	if (dname->spc && len < dname->spc_sz) {
+		(void) memcpy(dname->spc, text, len);
+		dname->r.text = dname->spc;
+		return;
+	}
+	dname->r.text = text;
+	if (text < i->text || text >= i->end)
+		return;
+
+	p_refer_insert(&i->refers, &dname->r);
 }
 
 static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
@@ -295,7 +352,7 @@ static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 	       || piece->start[0] != '$') {
 		/* Owner */
 
-		p_zfi_set_pf_dname(i, &i->owner, piece);
+		p_zfi_set_dname(i, &i->owner, piece->start, piece_sz);
 		piece++;
 		piece_sz = (piece->end - piece->start);
 
@@ -303,7 +360,8 @@ static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 	       && strncasecmp(piece->start, "$ORIGIN", 7) == 0) {
 		/* $ORIGIN */
 		piece++;
-		p_zfi_set_pf_dname(i, &i->origin, piece);
+		p_zfi_set_dname(i, &i->origin,
+		   piece->start, piece->end - piece->start);
 		return zonefile_iter_next(i);
 
 	} else if (piece_sz == 4 && strncasecmp(piece->start, "$TTL", 4) == 0) {
@@ -362,22 +420,49 @@ static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 	return i;
 }
 
-static zonefile_iter *p_zfi_init(zonefile_iter *i)
+static zonefile_iter *p_zfi_init(zonefile_iter *i, zonefile_settings *settings)
 {
+	static zonefile_settings default_settings = ZONEFILE_DEFAULT_SETTINGS;
+
+	i->settings = settings ? settings : &default_settings;
+
+	i->TTL = i->settings->ttl;
+
+	i->origin.spc_sz = i->settings->origin_spc_sz;
+	if (i->settings->origin_spc)
+		i->origin.spc = i->settings->origin_spc;
+	else if (i->origin.spc_sz)
+		i->origin.spc = calloc(1, i->origin.spc_sz);
+
+	if (i->settings->origin)
+		p_zfi_set_dname(i, &i->origin,
+		    i->settings->origin, strlen(i->settings->origin));
+
+	i->owner.spc_sz = i->settings->owner_spc_sz;
+	if (i->settings->owner_spc)
+		i->owner.spc = i->settings->owner_spc;
+	else if (i->owner.spc_sz)
+		i->owner.spc = calloc(1, i->owner.spc_sz);
+
+	i->n_pieces = i->settings->n_pieces;
+	if (i->settings->pieces)
+		i->pieces = i->settings->pieces;
+	else
+		i->pieces = calloc(i->n_pieces, sizeof(pf_piece));
+
+	i->rr_class = 1;
+	i->same_owner = 0;
+
 	i->line = i->cur;
 	i->current_piece = i->pieces;
 	if (!i->line)
 		return p_zfi_at_end(i);
 	else if (!p_zfi_get_piece(i))
 		return NULL;
-
-	i->TTL = 3600;
-	i->rr_class = 1;
-	i->same_owner = 0;
 	return p_zfi_process_rr(i);
 }
 
-zonefile_iter *zonefile_iter_init_text(
+static inline zonefile_iter *p_zfi_init_text(
     zonefile_iter *i, const char *text, size_t text_sz)
 {
 	if (!i || (text_sz && !text))
@@ -387,12 +472,14 @@ zonefile_iter *zonefile_iter_init_text(
 	i->fd = -1;
 	i->line = i->cur = i->text = text;
 	i->end = text + text_sz;
-	i->pieces = i->pieces_spc;
-	i->n_pieces = sizeof(i->pieces_spc) / sizeof(i->pieces_spc[0]);
-	return p_zfi_init(i);
+	return i;
 }
 
-zonefile_iter *zonefile_iter_init_fd(zonefile_iter *i, int fd)
+zonefile_iter *zonefile_iter_init_text_(
+    zonefile_iter *i, const char *text, size_t text_sz, zonefile_settings *s)
+{ return p_zfi_init_text(i, text, text_sz) ? p_zfi_init(i, s) : NULL; }
+
+static inline zonefile_iter *p_zfi_init_fd(zonefile_iter *i, int fd)
 {
 	struct stat statbuf;
 	const char *text;
@@ -404,7 +491,7 @@ zonefile_iter *zonefile_iter_init_fd(zonefile_iter *i, int fd)
 	                , MAP_PRIVATE, fd, 0)) == MAP_FAILED)
 		return NULL;
 
-	if (!zonefile_iter_init_text(i, text, statbuf.st_size))
+	if (!p_zfi_init_text(i, text, statbuf.st_size))
 		return NULL;
 
 	i->munmap_treshold = sysconf(_SC_PAGESIZE) * 64;
@@ -412,23 +499,31 @@ zonefile_iter *zonefile_iter_init_fd(zonefile_iter *i, int fd)
 	i->munmap = 1;
 	i->to_munmap = (char *)i->text;
 	i->fd   = fd;
-	return p_zfi_init(i);
+	return i;
 }
 
-zonefile_iter *zonefile_iter_init_fn(zonefile_iter *i, const char *fn)
+zonefile_iter *zonefile_iter_init_fd_(
+    zonefile_iter *i, int fd, zonefile_settings *settings)
+{ return p_zfi_init_fd(i, fd) ? p_zfi_init(i, settings) : NULL; }
+
+static inline zonefile_iter *p_zfi_init_fn(zonefile_iter *i, const char *fn)
 {
 	int fd;
 
 	if ((fd = open(fn, O_RDONLY)) < 0)
 		return NULL;
 
-	if (!zonefile_iter_init_fd(i, fd)) {
+	if (!p_zfi_init_fd(i, fd)) {
 		close(fd);
 		return NULL;
 	}
 	i->fn = fn;
-	return p_zfi_init(i);
+	return i;
 }
+
+zonefile_iter *zonefile_iter_init_fn_(
+    zonefile_iter *i, const char *fn, zonefile_settings *settings)
+{ return p_zfi_init_fn(i, fn) ? p_zfi_init(i, settings) : NULL; }
 
 zonefile_iter *zonefile_iter_next(zonefile_iter *i)
 {
@@ -442,23 +537,18 @@ zonefile_iter *zonefile_iter_next(zonefile_iter *i)
 	return p_zfi_process_rr(i);
 }
 
-void zonefile_iter_set_origin(                                                  
-    zonefile_iter *i, const char *origin, size_t origin_len)
+void zonefile_iter_up_ref(zonefile_iter *i, pf_refer *r)
 {
-	i->origin.r.text = origin;
-	i->origin.len = origin_len;
+	assert(r && !r->prev);
+
+	if (r->text < i->text || r->text >= i->end)
+		return;
+	p_refer_insert(&i->refers, r);
 }
 
-void zonefile_iter_set_origin_spc(
-    zonefile_iter *i, char *origin_spc, size_t origin_spc_sz)
+void pf_refer_dereference(pf_refer *r)
 {
-	i->origin.spc    = origin_spc;
-	i->origin.spc_sz = origin_spc_sz;
-}
+	assert(r && r->prev);
 
-void zonefile_iter_set_owner_spc(
-    zonefile_iter *i, char *owner_spc, size_t owner_spc_sz)
-{
-	i->owner.spc    = owner_spc;
-	i->owner.spc_sz = owner_spc_sz;
+	p_refer_remove(r);
 }
