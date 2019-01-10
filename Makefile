@@ -4,7 +4,7 @@ CFLAGS=-Ofast -Wall -Wpedantic -Werror -pg
 LDFLAGS=-pg
 PROGRAMS=read-zone
 SORT_ZONE_OBJS=sort-zone.o
-READ_ZONE_OBJS=read-zone.o presentation.o
+READ_ZONE_OBJS=read-zone.o presentation.o dnsextlang.o
 
 default: all
 all: $(PROGRAMS)
@@ -23,4 +23,6 @@ clean:
 	rm -f $(PROGRAMS) $(SORT_ZONE_OBJS) $(READ_ZONE_OBJS)
 
 presentation.o: presentation.c presentation.h
-read-zone.o: read-zone.c presentation.c presentation.h
+read-zone.o: read-zone.c \
+		presentation.c presentation.h \
+		dnsextlang.c dnsextlang.h

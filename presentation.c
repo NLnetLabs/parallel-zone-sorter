@@ -29,6 +29,7 @@
  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+#include "ldns2-int.h"
 #include "presentation.h"
 #include <assert.h>
 #include <ctype.h>
@@ -52,7 +53,7 @@ static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i)
 	if (i->cur) {
 		assert(i->cur == i->end);
 		i->cur = NULL;
-		i->current_piece->start = NULL;
+		i->cur_piece->start = NULL;
 		return i;
 	}
 	p_refer_remove(&i->origin.r);
@@ -60,22 +61,29 @@ static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i)
 	if (i->munmap && !i->refers) {
 		munmap(i->to_munmap, (i->end - i->to_munmap));
 		i->to_munmap = NULL;
+		i->munmap = 0;
 	}
 	close(i->fd);
 	i->fd = -1;
-	if (i->settings->origin_spc_sz) {
-		if (!i->settings->origin_spc
-		||   i->settings->origin_spc_sz != i->origin.spc_sz)
-			free(i->origin.spc);
+	if (i->origin.malloced) {
+		free(i->origin.spc);
+		i->origin.spc = NULL;
+		i->origin.spc_sz = 0;
+		i->origin.malloced = 0;
 	}
-	if (i->settings->owner_spc_sz) {
-		if (!i->settings->owner_spc
-		||   i->settings->owner_spc_sz != i->owner.spc_sz)
-			free(i->owner.spc);
+	if (i->owner.malloced) {
+		free(i->owner.spc);
+		i->owner.spc = NULL;
+		i->owner.spc_sz = 0;
+		i->owner.malloced = 0;
 	}
-	if (!i->settings->pieces
-	||   i->settings->n_pieces != i->n_pieces)
+	if (i->pieces_malloced) {
 		free(i->pieces);
+		i->pieces = NULL;
+		i->n_pieces = 0;
+		i->cur_piece = NULL;
+		i->pieces_malloced = 0;
+	}
 	return NULL;
 }
 
@@ -104,17 +112,45 @@ static inline void p_zfi_munmap(zonefile_iter *i)
 		p_zfi_munmap_(i, i->line);
 }
 
+
+static inline int p_zfi_incr_cur_piece(zonefile_iter *i)
+{
+	assert(i);
+	if (++i->cur_piece - i->pieces >= i->n_pieces) {
+		size_t needed = i->cur_piece - i->pieces;
+		size_t n_pieces = i->n_pieces;
+		ldns2_parse_piece *pieces;
+
+		do	n_pieces *= 2;
+		while ( n_pieces < needed);
+		pieces = realloc( i->pieces
+		                , sizeof(ldns2_parse_piece) * n_pieces);
+		if (!pieces)
+			return LDNS2_ERROR_MEM;
+
+		i->pieces = pieces;
+		i->n_pieces = n_pieces;
+		i->cur_piece = i->pieces + needed;
+	}
+	return LDNS2_STATUS_OK;
+}
+
+#define P_ZFI_INCR_CUR_PIECE(i) do { if (p_zfi_incr_cur_piece((i))) \
+	return LDNS2_MEM_ERROR(&(i)->err \
+	                      , "could not grow parser pieces"); } while (0)
+
 static zonefile_iter *p_zfi_get_piece(zonefile_iter *i);
 static zonefile_iter *p_zfi_return(zonefile_iter *i)
 {
+	assert(i);
 	i->cur++;
 	p_zfi_munmap(i);
-	if (i->current_piece == i->pieces) {
+	if (i->cur_piece == i->pieces) {
 		/* Nothing, so process next line*/
 		i->line = i->cur;
 		return i->line ? p_zfi_get_piece(i) : p_zfi_at_end(i);
 	}
-	i->current_piece->start = NULL;
+	i->cur_piece->start = NULL;
 	return i;
 }
 
@@ -147,16 +183,19 @@ static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 		return p_zfi_get_piece(i);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		i->current_piece->start = i->cur;
+		i->cur_piece->start = ++i->cur;
 		while (i->cur < i->end)
 			switch (*i->cur) {
 			case '\n':
 				/* Newline is end of quoted piece too */
+				i->cur_piece->end = i->cur;
+				P_ZFI_INCR_CUR_PIECE(i);
+				i->line_nr += 1;
+				return p_zfi_get_closing_piece(i);
 			case '"':
 				/* Closing quote found, get next piece */
-				i->cur += 1;
-				i->current_piece->end = i->cur;
-				i->current_piece += 1;
+				i->cur_piece->end = i->cur++;
+				P_ZFI_INCR_CUR_PIECE(i);
 				return p_zfi_get_closing_piece(i);
 
 			case '\\':
@@ -170,23 +209,23 @@ static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 				continue;
 			}
 
-		i->current_piece->end = i->cur;
-		i->current_piece += 1;
+		i->cur_piece->end = i->cur;
+		P_ZFI_INCR_CUR_PIECE(i);
 		return p_zfi_at_end(i);
 
 	default:
-		i->current_piece->start = i->cur;
+		i->cur_piece->start = i->cur;
 		while (i->cur < i->end)
 			switch (*i->cur) {
 			case ' ': case '\t': case '\f': case '\n':
 				/* Whitespace piece, get (but actually skip) */
-				i->current_piece->end = i->cur;
-				i->current_piece += 1;
+				i->cur_piece->end = i->cur;
+				P_ZFI_INCR_CUR_PIECE(i);
 				return p_zfi_get_closing_piece(i);
 
 			case ')':
-				i->current_piece->end = i->cur;
-				i->current_piece += 1;
+				i->cur_piece->end = i->cur;
+				P_ZFI_INCR_CUR_PIECE(i);
 				i->cur += 1;
 				return p_zfi_get_piece(i);
 
@@ -195,8 +234,8 @@ static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 				i->cur += 1;
 				continue;
 			}
-		i->current_piece->end = i->cur;
-		i->current_piece += 1;
+		i->cur_piece->end = i->cur;
+		P_ZFI_INCR_CUR_PIECE(i);
 		return p_zfi_at_end(i);
 	}
 }
@@ -236,20 +275,19 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i)
 		return p_zfi_get_closing_piece(i);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		i->current_piece->start = i->cur;
+		i->cur_piece->start = ++i->cur;
 		while (i->cur < i->end)
 			switch (*i->cur) {
 			case '\n':
 				/* Remaining space is no piece */
-				i->current_piece->end = i->cur;
-				i->current_piece += 1;
-				return p_zfi_return(i);
+				i->cur_piece->end = i->cur;
+				P_ZFI_INCR_CUR_PIECE(i);
+				return p_zfi_get_piece(i);
 
 			case '"':
 				/* Closing quote found, get next piece */
-				i->cur += 1;
-				i->current_piece->end = i->cur;
-				i->current_piece += 1;
+				i->cur_piece->end = i->cur++;
+				P_ZFI_INCR_CUR_PIECE(i);
 				return p_zfi_get_piece(i);
 
 			case '\\':
@@ -262,24 +300,24 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i)
 				i->cur += 1;
 				continue;
 			}
-		i->current_piece->end = i->cur;
-		i->current_piece += 1;
+		i->cur_piece->end = i->cur;
+		P_ZFI_INCR_CUR_PIECE(i);
 		return p_zfi_at_end(i);
 
 	default: /* unquoted piece (bounded by whitespace) */
-		i->current_piece->start = i->cur;
+		i->cur_piece->start = i->cur;
 		while (i->cur < i->end)
 			switch (*i->cur) {
 			case '\n':
 				/* Remaining space is no piece */
-				i->current_piece->end = i->cur;
-				i->current_piece += 1;
+				i->cur_piece->end = i->cur;
+				P_ZFI_INCR_CUR_PIECE(i);
 				return p_zfi_return(i);
 
 			case ' ': case '\t': case '\f':
 				/* Whitespace piece, get (but actually skip) */
-				i->current_piece->end = i->cur;
-				i->current_piece += 1;
+				i->cur_piece->end = i->cur;
+				P_ZFI_INCR_CUR_PIECE(i);
 				return p_zfi_get_piece(i);
 
 			case '\\':
@@ -292,8 +330,8 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i)
 				i->cur += 1;
 				continue;
 			}
-		i->current_piece->end = i->cur;
-		i->current_piece += 1;
+		i->cur_piece->end = i->cur;
+		P_ZFI_INCR_CUR_PIECE(i);
 		return p_zfi_at_end(i);
 	}
 }
@@ -319,26 +357,46 @@ static inline void p_refer_insert(pf_refer **refers, pf_refer *r)
 		p_refer_insert(&(*refers)->next, r);
 }
 
-static inline void p_zfi_set_dname(
+static inline void *p_zfi_set_dname(
     zonefile_iter *i, pf_dname *dname, const char *text, size_t len)
 {
 	p_refer_remove(&dname->r);
 	dname->len = len;
+
+	if (len > dname->spc_sz) {
+		if (dname->spc) {
+			if (!dname->malloced)
+				return LDNS2_OVERFLOW_ERROR(&i->err,
+				   "dname from zone does not "
+				   "fit the fixed sized buffer");
+			else
+				free(dname->spc);
+		}
+		if (!dname->spc_sz)
+			dname->spc_sz = ((len / 1024) + 1) * 1024;
+
+		else while (len > dname->spc_sz)
+			dname->spc_sz *= 2;
+
+		if (!(dname->spc = calloc(1, dname->spc_sz)))
+			return LDNS2_MEM_ERROR(&i->err,
+			    "could not allocate more "
+			    "space to fit dname from zone");
+	} 
 	if (dname->spc && len < dname->spc_sz) {
 		(void) memcpy(dname->spc, text, len);
 		dname->r.text = dname->spc;
-		return;
+		return i;
 	}
 	dname->r.text = text;
-	if (text < i->text || text >= i->end)
-		return;
-
-	p_refer_insert(&i->refers, &dname->r);
+	if (text >= i->text && text < i->end)
+		p_refer_insert(&i->refers, &dname->r);
+	return i;
 }
 
 static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 {
-	pf_piece *piece = i->pieces;
+	ldns2_parse_piece *piece = i->pieces;
 	ssize_t piece_sz;
 
 	piece_sz = (piece->end - piece->start);
@@ -352,7 +410,8 @@ static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 	       || piece->start[0] != '$') {
 		/* Owner */
 
-		p_zfi_set_dname(i, &i->owner, piece->start, piece_sz);
+		if (!p_zfi_set_dname(i, &i->owner, piece->start, piece_sz))
+			return NULL;
 		piece++;
 		piece_sz = (piece->end - piece->start);
 
@@ -360,8 +419,9 @@ static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 	       && strncasecmp(piece->start, "$ORIGIN", 7) == 0) {
 		/* $ORIGIN */
 		piece++;
-		p_zfi_set_dname(i, &i->origin,
-		   piece->start, piece->end - piece->start);
+		if (!p_zfi_set_dname(i, &i->origin,
+		    piece->start, piece->end - piece->start))
+			return NULL;
 		return zonefile_iter_next(i);
 
 	} else if (piece_sz == 4 && strncasecmp(piece->start, "$TTL", 4) == 0) {
@@ -420,53 +480,56 @@ static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 	return i;
 }
 
-static zonefile_iter *p_zfi_init(zonefile_iter *i, zonefile_settings *settings)
+static zonefile_iter *p_zfi_init(ldns2_config *cfg, zonefile_iter *i,
+    const char *origin)
 {
-	static zonefile_settings default_settings = ZONEFILE_DEFAULT_SETTINGS;
+	i->cfg = cfg;
+	i->TTL = cfg ? cfg->ttl : LDNS2_DEFAULT_TTL;
+	ldns2_error_reset(&i->err);
 
-	i->settings = settings ? settings : &default_settings;
+	i->origin.spc_sz = 1024;
+	if (!(i->origin.spc = calloc(1, i->origin.spc_sz)))
+		return LDNS2_MEM_ERROR(&i->err, "allocating space for origin "
+		                       "when initializing zonefile iterator");
+	i->origin.malloced = 1;
 
-	i->TTL = i->settings->ttl;
+	if (origin && !p_zfi_set_dname(i, &i->origin, origin, strlen(origin)))
+		return NULL;
 
-	i->origin.spc_sz = i->settings->origin_spc_sz;
-	if (i->settings->origin_spc)
-		i->origin.spc = i->settings->origin_spc;
-	else if (i->origin.spc_sz)
-		i->origin.spc = calloc(1, i->origin.spc_sz);
+	i->owner.spc_sz = 1024;
+	if (!(i->owner.spc = calloc(1, i->owner.spc_sz)))
+		return LDNS2_MEM_ERROR(&i->err, "allocating space for owner "
+		                       "when initializing zonefile iterator");
+	i->owner.malloced = 1;
 
-	if (i->settings->origin)
-		p_zfi_set_dname(i, &i->origin,
-		    i->settings->origin, strlen(i->settings->origin));
-
-	i->owner.spc_sz = i->settings->owner_spc_sz;
-	if (i->settings->owner_spc)
-		i->owner.spc = i->settings->owner_spc;
-	else if (i->owner.spc_sz)
-		i->owner.spc = calloc(1, i->owner.spc_sz);
-
-	i->n_pieces = i->settings->n_pieces;
-	if (i->settings->pieces)
-		i->pieces = i->settings->pieces;
-	else
-		i->pieces = calloc(i->n_pieces, sizeof(pf_piece));
+	i->n_pieces = 64;
+	if (!(i->pieces = calloc(i->n_pieces, sizeof(ldns2_parse_piece))))
+		return LDNS2_MEM_ERROR(&i->err, "allocating parser pieces "
+		                       "when initializing zonefile iterator");
+	i->pieces_malloced = 1;
 
 	i->rr_class = 1;
 	i->same_owner = 0;
 
 	i->line = i->cur;
-	i->current_piece = i->pieces;
+	i->cur_piece = i->pieces;
 	if (!i->line)
 		return p_zfi_at_end(i);
+
 	else if (!p_zfi_get_piece(i))
 		return NULL;
+
 	return p_zfi_process_rr(i);
 }
 
 static inline zonefile_iter *p_zfi_init_text(
     zonefile_iter *i, const char *text, size_t text_sz)
 {
-	if (!i || (text_sz && !text))
+	if (!i)
 		return NULL;
+
+	if ((text_sz && !text))
+		return LDNS2_USAGE_ERROR(&i->err, "zonefile text missing");
 
 	(void) memset(i, 0, sizeof(*i));
 	i->fd = -1;
@@ -475,9 +538,9 @@ static inline zonefile_iter *p_zfi_init_text(
 	return i;
 }
 
-zonefile_iter *zonefile_iter_init_text_(
-    zonefile_iter *i, const char *text, size_t text_sz, zonefile_settings *s)
-{ return p_zfi_init_text(i, text, text_sz) ? p_zfi_init(i, s) : NULL; }
+zonefile_iter *zonefile_iter_init_text2(ldns2_config *cfg,
+    zonefile_iter *i, const char *text, size_t text_sz, const char *orig)
+{ return p_zfi_init_text(i, text, text_sz) ? p_zfi_init(cfg, i, orig) : NULL; }
 
 static inline zonefile_iter *p_zfi_init_fd(zonefile_iter *i, int fd)
 {
@@ -485,11 +548,13 @@ static inline zonefile_iter *p_zfi_init_fd(zonefile_iter *i, int fd)
 	const char *text;
 
 	if (fstat(fd, &statbuf) < 0)
-		return NULL;
+		return LDNS2_IO_ERROR(&i->err, "determining file size "
+		                      "when initializing zonefile iterator");
 
 	if ((text = mmap( NULL, statbuf.st_size, PROT_READ
 	                , MAP_PRIVATE, fd, 0)) == MAP_FAILED)
-		return NULL;
+		return LDNS2_IO_ERROR(&i->err, "mmapping space for te zone "
+		                      "when initializing zonefile iterator");
 
 	if (!p_zfi_init_text(i, text, statbuf.st_size))
 		return NULL;
@@ -502,16 +567,17 @@ static inline zonefile_iter *p_zfi_init_fd(zonefile_iter *i, int fd)
 	return i;
 }
 
-zonefile_iter *zonefile_iter_init_fd_(
-    zonefile_iter *i, int fd, zonefile_settings *settings)
-{ return p_zfi_init_fd(i, fd) ? p_zfi_init(i, settings) : NULL; }
+zonefile_iter *zonefile_iter_init_fd2(ldns2_config *cfg,
+    zonefile_iter *i, int fd, const char *origin)
+{ return p_zfi_init_fd(i, fd) ? p_zfi_init(cfg, i, origin) : NULL; }
 
 static inline zonefile_iter *p_zfi_init_fn(zonefile_iter *i, const char *fn)
 {
 	int fd;
 
 	if ((fd = open(fn, O_RDONLY)) < 0)
-		return NULL;
+		return LDNS2_IO_ERROR(&i->err, "opening filename"
+		                      "when initializing zonefile iterator");
 
 	if (!p_zfi_init_fd(i, fd)) {
 		close(fd);
@@ -521,14 +587,14 @@ static inline zonefile_iter *p_zfi_init_fn(zonefile_iter *i, const char *fn)
 	return i;
 }
 
-zonefile_iter *zonefile_iter_init_fn_(
-    zonefile_iter *i, const char *fn, zonefile_settings *settings)
-{ return p_zfi_init_fn(i, fn) ? p_zfi_init(i, settings) : NULL; }
+zonefile_iter *zonefile_iter_init_fn2(ldns2_config *cfg,
+    zonefile_iter *i, const char *fn, const char *origin)
+{ return p_zfi_init_fn(i, fn) ? p_zfi_init(cfg, i, origin) : NULL; }
 
 zonefile_iter *zonefile_iter_next(zonefile_iter *i)
 {
 	i->line = i->cur;
-	i->current_piece = i->pieces;
+	i->cur_piece = i->pieces;
 	if (!i->line)
 		return p_zfi_at_end(i);
 	else if (!p_zfi_get_piece(i))

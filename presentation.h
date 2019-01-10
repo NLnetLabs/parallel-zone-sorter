@@ -32,29 +32,7 @@
 
 #ifndef PRESENTATION_H_
 # define PRESENTATION_H_
-# include <stdint.h>
-# include <stddef.h>
-
-typedef struct pf_piece {
-	const char *start;
-	const char *end;
-	size_t      line_nr;
-	size_t      col_nr;
-	const char *fn;
-} pf_piece;
-
-typedef struct zonefile_settings {
-	uint32_t  ttl;
-	char     *origin;
-	char     *origin_spc;
-	size_t    origin_spc_sz;
-	char     *owner_spc;
-	size_t    owner_spc_sz;
-	pf_piece *pieces;
-	size_t    n_pieces;
-} zonefile_settings;
-
-#define ZONEFILE_DEFAULT_SETTINGS {3600, "", NULL, 1024, NULL, 1024, NULL, 128}
+# include "ldns2.h"
 
 typedef struct pf_refer pf_refer;
 struct pf_refer {
@@ -68,10 +46,12 @@ typedef struct pf_dname {
 	size_t   len;
 	char    *spc;
 	size_t   spc_sz;
+	unsigned malloced: 1;
 } pf_dname;
 
 typedef struct zonefile_iter {
-	zonefile_settings *settings;
+	ldns2_config *cfg;
+	ldns2_error err;
 	const char *fn;
 	int         fd;
 
@@ -90,42 +70,42 @@ typedef struct zonefile_iter {
 
 	size_t      line_nr;
 
-	pf_piece   *current_piece;   /* on iter return is last piece */
-
-	pf_piece   *pieces;          /* pieces = pieces_spc */
-	size_t      n_pieces;        /* # available pieces */
+	ldns2_parse_piece *cur_piece; /* on iter return is last piece */
+	ldns2_parse_piece *pieces;
+	size_t           n_pieces;    /* # available pieces */
 
 	pf_dname    origin;
 	pf_dname    owner;
 
-	uint32_t    TTL;
-	uint32_t    ttl;
-	pf_piece   *rr_type;  /* assert: current_piece > rr_type >= pieces */
-	uint16_t    rr_class;
+	uint32_t           TTL;
+	uint32_t           ttl;
+	ldns2_parse_piece *rr_type;  /* assert: current_piece > rr_type >= pieces */
+	uint16_t           rr_class;
 
-	unsigned int munmap    : 1; /* 1 when text was mmapped */
-	unsigned int same_owner: 1; /* owner same as with previous RR */
+	unsigned munmap         : 1; /* 1 when text was mmapped */
+	unsigned pieces_malloced: 1;
+	unsigned same_owner     : 1; /* owner same as with previous RR */
 } zonefile_iter;
 
-zonefile_iter *zonefile_iter_init_text_(
-    zonefile_iter *i, const char *text, size_t text_sz, zonefile_settings *s);
+zonefile_iter *zonefile_iter_init_text2(ldns2_config *cfg,
+    zonefile_iter *i, const char *text, size_t text_sz, const char *origin);
 
-zonefile_iter *zonefile_iter_init_fd_(
-    zonefile_iter *i, int fd, zonefile_settings *settings);
+zonefile_iter *zonefile_iter_init_fd2(ldns2_config *cfg,
+    zonefile_iter *i, int fd, const char *origin);
 
-zonefile_iter *zonefile_iter_init_fn_(
-    zonefile_iter *i, const char *fn, zonefile_settings *settings);
+zonefile_iter *zonefile_iter_init_fn2(ldns2_config *cfg,
+    zonefile_iter *i, const char *fn, const char *origin);
 
 static inline zonefile_iter *zonefile_iter_init_text(
     zonefile_iter *i, const char *text, size_t text_sz)
-{ return zonefile_iter_init_text_(i, text, text_sz, NULL); }
+{ return zonefile_iter_init_text2(NULL, i, text, text_sz, NULL); }
 
 static inline zonefile_iter *zonefile_iter_init_fd(zonefile_iter *i, int fd)
-{ return zonefile_iter_init_fd_(i, fd, NULL); }
+{ return zonefile_iter_init_fd2(NULL, i, fd, NULL); }
 
 static inline zonefile_iter *zonefile_iter_init_fn(
-    zonefile_iter *i, const char *fn)
-{ return zonefile_iter_init_fn_(i, fn, NULL); }
+   zonefile_iter *i, const char *fn)
+{ return zonefile_iter_init_fn2(NULL, i, fn, NULL); }
 
 zonefile_iter *zonefile_iter_next(zonefile_iter *i);
 
