@@ -72,7 +72,7 @@ typedef struct zonefile_iter {
 
 	ldns2_parse_piece *cur_piece; /* on iter return is last piece */
 	ldns2_parse_piece *pieces;
-	size_t           n_pieces;    /* # available pieces */
+	ldns2_parse_piece *end_of_pieces;
 
 	pf_dname    origin;
 	pf_dname    owner;

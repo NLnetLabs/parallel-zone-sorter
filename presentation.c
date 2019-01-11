@@ -80,8 +80,8 @@ static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i)
 	if (i->pieces_malloced) {
 		free(i->pieces);
 		i->pieces = NULL;
-		i->n_pieces = 0;
 		i->cur_piece = NULL;
+		i->end_of_pieces = NULL;
 		i->pieces_malloced = 0;
 	}
 	return NULL;
@@ -112,35 +112,28 @@ static inline void p_zfi_munmap(zonefile_iter *i)
 		p_zfi_munmap_(i, i->line);
 }
 
-
-static inline int p_zfi_incr_cur_piece(zonefile_iter *i)
+static inline zonefile_iter *p_zfi_incr_cur_piece(zonefile_iter *i)
 {
-	assert(i);
-	if (++i->cur_piece - i->pieces >= i->n_pieces) {
-		size_t needed = i->cur_piece - i->pieces;
-		size_t n_pieces = i->n_pieces;
+	i->cur_piece += 1;
+	if (i->cur_piece >= i->end_of_pieces) {
+		size_t cur_piece_off = i->cur_piece - i->pieces;
+		size_t n_pieces = (i->end_of_pieces - i->pieces) * 2;
 		ldns2_parse_piece *pieces;
-
-		do	n_pieces *= 2;
-		while ( n_pieces < needed);
-		pieces = realloc( i->pieces
-		                , sizeof(ldns2_parse_piece) * n_pieces);
+		
+		pieces = realloc(i->pieces,
+		    sizeof(ldns2_parse_piece) * n_pieces);
 		if (!pieces)
-			return LDNS2_ERROR_MEM;
-
+			return LDNS2_MEM_ERROR(&(i)->err,
+			    "could not grow parser pieces");
 		i->pieces = pieces;
-		i->n_pieces = n_pieces;
-		i->cur_piece = i->pieces + needed;
+		i->end_of_pieces = i->pieces + n_pieces;
+		i->cur_piece = i->pieces + cur_piece_off;
 	}
-	return LDNS2_STATUS_OK;
+	return i;
 }
 
-#define P_ZFI_INCR_CUR_PIECE(i) do { if (p_zfi_incr_cur_piece((i))) \
-	return LDNS2_MEM_ERROR(&(i)->err \
-	                      , "could not grow parser pieces"); } while (0)
-
 static zonefile_iter *p_zfi_get_piece(zonefile_iter *i);
-static zonefile_iter *p_zfi_return(zonefile_iter *i)
+static inline zonefile_iter *p_zfi_return(zonefile_iter *i)
 {
 	assert(i);
 	i->cur++;
@@ -154,7 +147,7 @@ static zonefile_iter *p_zfi_return(zonefile_iter *i)
 	return i;
 }
 
-static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
+static inline zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 {
 	switch (*i->cur) {
 	case ';':
@@ -189,13 +182,13 @@ static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 			case '\n':
 				/* Newline is end of quoted piece too */
 				i->cur_piece->end = i->cur;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				i->line_nr += 1;
 				return p_zfi_get_closing_piece(i);
 			case '"':
 				/* Closing quote found, get next piece */
 				i->cur_piece->end = i->cur++;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				return p_zfi_get_closing_piece(i);
 
 			case '\\':
@@ -210,7 +203,7 @@ static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 			}
 
 		i->cur_piece->end = i->cur;
-		P_ZFI_INCR_CUR_PIECE(i);
+		if (!p_zfi_incr_cur_piece(i)) return NULL;
 		return p_zfi_at_end(i);
 
 	default:
@@ -220,12 +213,12 @@ static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 			case ' ': case '\t': case '\f': case '\n':
 				/* Whitespace piece, get (but actually skip) */
 				i->cur_piece->end = i->cur;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				return p_zfi_get_closing_piece(i);
 
 			case ')':
 				i->cur_piece->end = i->cur;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				i->cur += 1;
 				return p_zfi_get_piece(i);
 
@@ -235,7 +228,7 @@ static zonefile_iter *p_zfi_get_closing_piece(zonefile_iter *i)
 				continue;
 			}
 		i->cur_piece->end = i->cur;
-		P_ZFI_INCR_CUR_PIECE(i);
+		if (!p_zfi_incr_cur_piece(i)) return NULL;
 		return p_zfi_at_end(i);
 	}
 }
@@ -281,13 +274,13 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i)
 			case '\n':
 				/* Remaining space is no piece */
 				i->cur_piece->end = i->cur;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				return p_zfi_get_piece(i);
 
 			case '"':
 				/* Closing quote found, get next piece */
 				i->cur_piece->end = i->cur++;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				return p_zfi_get_piece(i);
 
 			case '\\':
@@ -301,7 +294,7 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i)
 				continue;
 			}
 		i->cur_piece->end = i->cur;
-		P_ZFI_INCR_CUR_PIECE(i);
+		if (!p_zfi_incr_cur_piece(i)) return NULL;
 		return p_zfi_at_end(i);
 
 	default: /* unquoted piece (bounded by whitespace) */
@@ -311,13 +304,13 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i)
 			case '\n':
 				/* Remaining space is no piece */
 				i->cur_piece->end = i->cur;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				return p_zfi_return(i);
 
 			case ' ': case '\t': case '\f':
 				/* Whitespace piece, get (but actually skip) */
 				i->cur_piece->end = i->cur;
-				P_ZFI_INCR_CUR_PIECE(i);
+				if (!p_zfi_incr_cur_piece(i)) return NULL;
 				return p_zfi_get_piece(i);
 
 			case '\\':
@@ -331,7 +324,7 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i)
 				continue;
 			}
 		i->cur_piece->end = i->cur;
-		P_ZFI_INCR_CUR_PIECE(i);
+		if (!p_zfi_incr_cur_piece(i)) return NULL;
 		return p_zfi_at_end(i);
 	}
 }
@@ -394,7 +387,7 @@ static inline void *p_zfi_set_dname(
 	return i;
 }
 
-static zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
+static inline zonefile_iter *p_zfi_process_rr(zonefile_iter *i)
 {
 	ldns2_parse_piece *piece = i->pieces;
 	ssize_t piece_sz;
@@ -502,10 +495,10 @@ static zonefile_iter *p_zfi_init(ldns2_config *cfg, zonefile_iter *i,
 		                       "when initializing zonefile iterator");
 	i->owner.malloced = 1;
 
-	i->n_pieces = 64;
-	if (!(i->pieces = calloc(i->n_pieces, sizeof(ldns2_parse_piece))))
+	if (!(i->pieces = calloc(64, sizeof(ldns2_parse_piece))))
 		return LDNS2_MEM_ERROR(&i->err, "allocating parser pieces "
 		                       "when initializing zonefile iterator");
+	i->end_of_pieces = i->pieces + 64;
 	i->pieces_malloced = 1;
 
 	i->rr_class = 1;
@@ -559,7 +552,7 @@ static inline zonefile_iter *p_zfi_init_fd(zonefile_iter *i, int fd)
 	if (!p_zfi_init_text(i, text, statbuf.st_size))
 		return NULL;
 
-	i->munmap_treshold = sysconf(_SC_PAGESIZE) * 64;
+	i->munmap_treshold = sysconf(_SC_PAGESIZE) * 32;
 	i->munmap_preserve = sysconf(_SC_PAGESIZE);
 	i->munmap = 1;
 	i->to_munmap = (char *)i->text;
