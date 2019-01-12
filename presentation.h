@@ -32,6 +32,7 @@
 
 #ifndef PRESENTATION_H_
 # define PRESENTATION_H_
+# include "return_status.h"
 # include "ldns2.h"
 
 typedef struct pf_refer pf_refer;
@@ -51,7 +52,7 @@ typedef struct pf_dname {
 
 typedef struct zonefile_iter {
 	ldns2_config *cfg;
-	ldns2_error err;
+	status_code code;
 	const char *fn;
 	int         fd;
 
@@ -87,27 +88,30 @@ typedef struct zonefile_iter {
 	unsigned same_owner     : 1; /* owner same as with previous RR */
 } zonefile_iter;
 
-zonefile_iter *zonefile_iter_init_text2(ldns2_config *cfg,
-    zonefile_iter *i, const char *text, size_t text_sz, const char *origin);
+zonefile_iter *zonefile_iter_init_text_(ldns2_config *cfg, zonefile_iter *i,
+    const char *text, size_t text_sz, const char *origin, return_status *st);
 
-zonefile_iter *zonefile_iter_init_fd2(ldns2_config *cfg,
-    zonefile_iter *i, int fd, const char *origin);
+zonefile_iter *zonefile_iter_init_fd_(ldns2_config *cfg, zonefile_iter *i,
+    int fd, const char *origin, return_status *st);
 
-zonefile_iter *zonefile_iter_init_fn2(ldns2_config *cfg,
-    zonefile_iter *i, const char *fn, const char *origin);
+zonefile_iter *zonefile_iter_init_fn_(ldns2_config *cfg, zonefile_iter *i,
+    const char *fn, const char *origin, return_status *st);
 
 static inline zonefile_iter *zonefile_iter_init_text(
     zonefile_iter *i, const char *text, size_t text_sz)
-{ return zonefile_iter_init_text2(NULL, i, text, text_sz, NULL); }
+{ return zonefile_iter_init_text_(NULL, i, text, text_sz, NULL, NULL); }
 
 static inline zonefile_iter *zonefile_iter_init_fd(zonefile_iter *i, int fd)
-{ return zonefile_iter_init_fd2(NULL, i, fd, NULL); }
+{ return zonefile_iter_init_fd_(NULL, i, fd, NULL, NULL); }
 
 static inline zonefile_iter *zonefile_iter_init_fn(
    zonefile_iter *i, const char *fn)
-{ return zonefile_iter_init_fn2(NULL, i, fn, NULL); }
+{ return zonefile_iter_init_fn_(NULL, i, fn, NULL, NULL); }
 
-zonefile_iter *zonefile_iter_next(zonefile_iter *i);
+zonefile_iter *zonefile_iter_next_(zonefile_iter *i, return_status *st);
+
+static inline zonefile_iter *zonefile_iter_next(zonefile_iter *i)
+{ return zonefile_iter_next_(i, NULL); }
 
 void zonefile_iter_up_ref(zonefile_iter *i, pf_refer *r);
 

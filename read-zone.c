@@ -29,17 +29,61 @@
  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#include "dnsextlang.h"
 #include "presentation.h"
+#include "dnsextlang.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
+
+void print_status(return_status *stat)
+{
+	assert(stat);
+	switch (stat->code) {
+	case STATUS_OK:
+		fprintf(stderr, "Everything OK\n");
+		break;
+
+	case STATUS_PARSE_ERR:
+		fprintf( stderr
+		       , "parse error: %s in \"%s\" "
+		         "at line %zu col %zu\n\tin function %s at %s:%d\n"
+		       , stat->msg
+		       , stat->details.parse.fn
+		       , stat->details.parse.line_nr
+		       , stat->details.parse.col_nr
+		       , stat->func
+		       , stat->file
+		       , stat->line
+		       );
+		break;
+	default:
+		fprintf( stderr
+		       , "%s error: %s in function %s at %s:%d\n"
+		       , status_code2str(stat->code)
+		       , stat->msg
+		       , stat->func
+		       , stat->file
+		       , stat->line
+		       );
+		break;
+	}
+}
 
 int main(int argc, char **argv)
 {
+	return_status status = RETURN_STATUS_CLEAR;
 	ldns2_config cfg = LDNS2_CONFIG_DEFAULTS;
 	dnsextlang_definitions *def;
 	zonefile_iter zi_spc, *zi = NULL;
 	size_t rr_count;
+	status_code code;
+
+	code = RETURN_IO_ERR(&status, "Hopsakidee");
+	print_status(&status);
+	(void) NULL_DATA_ERR(&code, &status, "hela hola");
+	print_status(&status);
+	code = RETURN_PARSE_ERR(&status, "Tjongejonge", "rrtypes.txt", 10, 20);
+	print_status(&status);
 
 	cfg.rrtypes = NULL;
 	def = dnsextlang_definitions_new_from_fn2(&cfg, "rrtypes.txt");
@@ -49,9 +93,9 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 	rr_count = 0;
-	for ( zi = zonefile_iter_init_fn2(&cfg, &zi_spc, argv[1]
-	                                 , argc == 3 ? argv[2] : NULL)
-	    ; zi ; zi = zonefile_iter_next(zi)) {
+	for ( zi = zonefile_iter_init_fn_(&cfg, &zi_spc, argv[1]
+	                                 , argc == 3 ? argv[2] : NULL, &status)
+	    ; zi ; zi = zonefile_iter_next_(zi, &status)) {
 		dnsextlang_stanza *s = dnsextlang_str2stanza3(def,
 		    zi->rr_type->start, zi->rr_type->end - zi->rr_type->start);
 
@@ -83,6 +127,8 @@ int main(int argc, char **argv)
 #endif
 		rr_count++;
 	}
+	if (status.code)
+		print_status(&status);
 	printf("Counted %zu RRs in zone %s\n", rr_count, argv[1]);
 	return EXIT_SUCCESS;
 }
