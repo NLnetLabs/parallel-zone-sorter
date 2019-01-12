@@ -31,9 +31,10 @@
  */
 
 #ifndef PRESENTATION_H_
-# define PRESENTATION_H_
-# include "return_status.h"
-# include "ldns2.h"
+#define PRESENTATION_H_
+#include "parser.h"
+#include "return_status.h"
+#include "ldns2.h"
 
 typedef struct pf_refer pf_refer;
 struct pf_refer {
@@ -51,6 +52,8 @@ typedef struct pf_dname {
 } pf_dname;
 
 typedef struct zonefile_iter {
+	parser p;
+
 	ldns2_config *cfg;
 	status_code code;
 	const char *fn;
@@ -67,21 +70,23 @@ typedef struct zonefile_iter {
 
 	const char *text;
 	const char *end;
-	const char *line;
 
+	const char *sol;
 	size_t      line_nr;
 
-	ldns2_parse_piece *cur_piece; /* on iter return is last piece */
-	ldns2_parse_piece *pieces;
-	ldns2_parse_piece *end_of_pieces;
+	const char *line;
+
+	parse_piece *cur_piece; /* on iter return is last piece */
+	parse_piece *pieces;
+	parse_piece *end_of_pieces;
 
 	pf_dname    origin;
 	pf_dname    owner;
 
-	uint32_t           TTL;
-	uint32_t           ttl;
-	ldns2_parse_piece *rr_type;  /* assert: current_piece > rr_type >= pieces */
-	uint16_t           rr_class;
+	uint32_t     TTL;
+	uint32_t     ttl;
+	parse_piece *rr_type;  /* assert: current_piece > rr_type >= pieces */
+	uint16_t     rr_class;
 
 	unsigned munmap         : 1; /* 1 when text was mmapped */
 	unsigned pieces_malloced: 1;

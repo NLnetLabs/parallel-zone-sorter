@@ -49,8 +49,8 @@ void print_status(return_status *stat)
 		         "at line %zu col %zu\n\tin function %s at %s:%d\n"
 		       , stat->msg
 		       , stat->details.parse.fn
-		       , stat->details.parse.line_nr
-		       , stat->details.parse.col_nr
+		       , stat->details.parse.line_nr + 1
+		       , stat->details.parse.col_nr + 1
 		       , stat->func
 		       , stat->file
 		       , stat->line

@@ -33,6 +33,7 @@
 #ifndef RETURN_STATUS_H_ 
 #define RETURN_STATUS_H_
 #include <stddef.h>
+#include <stdint.h>
 
 typedef enum status_code {
 	STATUS_OK           = 0,

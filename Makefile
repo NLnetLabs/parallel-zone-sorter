@@ -25,4 +25,4 @@ clean:
 presentation.o: presentation.c presentation.h
 read-zone.o: read-zone.c \
 		presentation.c presentation.h \
-		dnsextlang.c dnsextlang.h return_status.h
+		dnsextlang.c dnsextlang.h return_status.h parser.h

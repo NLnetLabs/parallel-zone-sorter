@@ -120,10 +120,10 @@ static inline zonefile_iter *p_zfi_incr_cur_piece(
 	if (i->cur_piece >= i->end_of_pieces) {
 		size_t cur_piece_off = i->cur_piece - i->pieces;
 		size_t n_pieces = (i->end_of_pieces - i->pieces) * 2;
-		ldns2_parse_piece *pieces;
+		parse_piece *pieces;
 		
 		pieces = realloc(i->pieces,
-		    sizeof(ldns2_parse_piece) * n_pieces);
+		    sizeof(parse_piece) * n_pieces);
 		if (!pieces)
 			return NULL_MEM_ERR(&i->code, st,
 			    "could not grow parser pieces");
@@ -138,7 +138,10 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st);
 static inline zonefile_iter *p_zfi_return(zonefile_iter *i, return_status *st)
 {
 	assert(i);
-	i->cur++;
+	if (*i->cur++ == '\n') {
+		i->line_nr += 1;
+		i->sol = i->cur;
+	}
 	p_zfi_munmap(i);
 	if (i->cur_piece == i->pieces) {
 		/* Nothing, so process next line*/
@@ -156,16 +159,24 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 	case ';':
 		/* A comment is NO PART, but skip till end-of-line */
 		while (++i->cur < i->end)
-			if (*i->cur == '\n') {
-				i->cur += 1;
+			if (*i->cur == '\n') 
+				/* p_zfi_get_closing_piece()
+				 * does cur and line_nr incr. */
 				return p_zfi_get_closing_piece(i, st);
-			}
 		return p_zfi_at_end(i, st);
 
-	case ' ': case '\t': case '\f': case '\n':
+	case '\n':
+		i->line_nr += 1;
+		i->sol = i->cur + 1;
+		/* fallthrough */
+	case ' ': case '\t': case '\f':
 		while (++i->cur < i->end)
 			switch (*i->cur) {
-			case ' ': case '\t': case '\f': case '\n':
+			case '\n':
+				i->line_nr += 1;
+				i->sol = i->cur + 1;
+				/* fallthrough */
+			case ' ': case '\t': case '\f':
 				/* Skip whitespace */
 				continue;
 			default:
@@ -179,19 +190,30 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 		return p_zfi_get_piece(i, st);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		i->cur_piece->start = ++i->cur;
+		i->cur += 1;
+		if ((i->code = equip_cur_piece(&i->p, i->fn, st)))
+			return NULL;
+		i->cur_piece->start = i->cur;
+		i->cur_piece->line_nr = i->line_nr;
+		i->cur_piece->col_nr = i->cur - i->sol;
+		i->cur_piece->fn = i->fn;
 		while (i->cur < i->end)
 			switch (*i->cur) {
 			case '\n':
 				/* Newline is end of quoted piece too */
 				i->cur_piece->end = i->cur;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
-				i->line_nr += 1;
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
+				/* p_zfi_get_closing_piece()
+				 * does cur and line_nr incr. */
 				return p_zfi_get_closing_piece(i, st);
 			case '"':
 				/* Closing quote found, get next piece */
 				i->cur_piece->end = i->cur++;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
 				return p_zfi_get_closing_piece(i, st);
 
 			case '\\':
@@ -207,21 +229,35 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 
 		i->cur_piece->end = i->cur;
 		if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+		if ((i->code = increment_cur_piece(&i->p, st)))
+			return NULL;
 		return p_zfi_at_end(i, st);
 
 	default:
+		if ((i->code = equip_cur_piece(&i->p, i->fn, st)))
+			return NULL;
 		i->cur_piece->start = i->cur;
+		i->cur_piece->line_nr = i->line_nr;
+		i->cur_piece->col_nr = i->cur - i->sol;
+		i->cur_piece->fn = i->fn;
 		while (i->cur < i->end)
 			switch (*i->cur) {
-			case ' ': case '\t': case '\f': case '\n':
+			case '\n':
+			case ' ': case '\t': case '\f':
 				/* Whitespace piece, get (but actually skip) */
 				i->cur_piece->end = i->cur;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
+				/* p_zfi_get_closing_piece()
+				 * does cur and line_nr incr. */
 				return p_zfi_get_closing_piece(i, st);
 
 			case ')':
 				i->cur_piece->end = i->cur;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
 				i->cur += 1;
 				return p_zfi_get_piece(i, st);
 
@@ -232,6 +268,8 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 			}
 		i->cur_piece->end = i->cur;
 		if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+		if ((i->code = increment_cur_piece(&i->p, st)))
+			return NULL;
 		return p_zfi_at_end(i, st);
 	}
 }
@@ -243,11 +281,14 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 		/* A comment is NO PART, but skip till end-of-line */
 		while (++i->cur < i->end)
 			if (*i->cur == '\n')
+				/* p_zfi_return()
+				 * does cur and line_nr incr. */
 				return p_zfi_return(i, st);
 		return p_zfi_at_end(i, st);
 
 	case '\n':
-		/* Remaining space is NO PART */
+		/* Remaining space is no piece */
+		/* p_zfi_return() does cur and line_nr incr. */
 		return p_zfi_return(i, st);
 
 	case ' ': case '\t': case '\f':
@@ -255,6 +296,8 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 			switch (*i->cur) {
 			case '\n':
 				/* Remaining space is no piece */
+				/* p_zfi_return()
+				 * does cur and line_nr incr. */
 				return p_zfi_return(i, st);
 
 			case ' ': case '\t': case '\f':
@@ -271,19 +314,31 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 		return p_zfi_get_closing_piece(i, st);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		i->cur_piece->start = ++i->cur;
+		i->cur += 1;
+		if ((i->code = equip_cur_piece(&i->p, i->fn, st)))
+			return NULL;
+		i->cur_piece->start = i->cur;
+		i->cur_piece->line_nr = i->line_nr;
+		i->cur_piece->col_nr = i->cur - i->sol;
+		i->cur_piece->fn = i->fn;
 		while (i->cur < i->end)
 			switch (*i->cur) {
 			case '\n':
 				/* Remaining space is no piece */
 				i->cur_piece->end = i->cur;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
-				return p_zfi_get_piece(i, st);
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
+				/* p_zfi_return()
+				 * does cur and line_nr incr. */
+				return p_zfi_return(i, st);
 
 			case '"':
 				/* Closing quote found, get next piece */
 				i->cur_piece->end = i->cur++;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
 				return p_zfi_get_piece(i, st);
 
 			case '\\':
@@ -298,22 +353,35 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 			}
 		i->cur_piece->end = i->cur;
 		if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+		if ((i->code = increment_cur_piece(&i->p, st)))
+			return NULL;
 		return p_zfi_at_end(i, st);
 
 	default: /* unquoted piece (bounded by whitespace) */
+		if ((i->code = equip_cur_piece(&i->p, i->fn, st)))
+			return NULL;
 		i->cur_piece->start = i->cur;
+		i->cur_piece->line_nr = i->line_nr;
+		i->cur_piece->col_nr = i->cur - i->sol;
+		i->cur_piece->fn = i->fn;
 		while (i->cur < i->end)
 			switch (*i->cur) {
 			case '\n':
 				/* Remaining space is no piece */
 				i->cur_piece->end = i->cur;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
+				/* p_zfi_return()
+				 * does cur and line_nr incr. */
 				return p_zfi_return(i, st);
 
 			case ' ': case '\t': case '\f':
 				/* Whitespace piece, get (but actually skip) */
 				i->cur_piece->end = i->cur;
 				if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+				if ((i->code = increment_cur_piece(&i->p, st)))
+					return NULL;
 				return p_zfi_get_piece(i, st);
 
 			case '\\':
@@ -328,6 +396,8 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 			}
 		i->cur_piece->end = i->cur;
 		if (!p_zfi_incr_cur_piece(i, st)) return NULL;
+		if ((i->code = increment_cur_piece(&i->p, st)))
+			return NULL;
 		return p_zfi_at_end(i, st);
 	}
 }
@@ -398,7 +468,7 @@ static inline void *p_zfi_set_dname(zonefile_iter *i,
 static inline zonefile_iter *
 p_zfi_process_rr(zonefile_iter *i, return_status *st)
 {
-	ldns2_parse_piece *piece = i->pieces;
+	parse_piece *piece = i->pieces;
 	ssize_t piece_sz;
 
 	piece_sz = (piece->end - piece->start);
@@ -515,7 +585,7 @@ static zonefile_iter *p_zfi_init(ldns2_config *cfg, zonefile_iter *i,
 		                    "when initializing zonefile iterator");
 	i->owner.malloced = 1;
 
-	if (!(i->pieces = calloc(64, sizeof(ldns2_parse_piece))))
+	if (!(i->pieces = calloc(64, sizeof(parse_piece))))
 		return NULL_MEM_ERR(&i->code, st, "allocating parser pieces "
 		                       "when initializing zonefile iterator");
 	i->end_of_pieces = i->pieces + 64;
@@ -525,8 +595,12 @@ static zonefile_iter *p_zfi_init(ldns2_config *cfg, zonefile_iter *i,
 	i->same_owner = 0;
 
 	i->line = i->cur;
+
+	if ((i->code = reset_cur_piece(&i->p, st)))
+		return NULL;
+
 	i->cur_piece = i->pieces;
-	if (!i->line)
+	if (!i->cur)
 		return p_zfi_at_end(i, st);
 
 	else if (!p_zfi_get_piece(i, st))
@@ -538,12 +612,15 @@ static zonefile_iter *p_zfi_init(ldns2_config *cfg, zonefile_iter *i,
 static inline zonefile_iter *p_zfi_init_text(zonefile_iter *i,
     const char *text, size_t text_sz, return_status *st)
 {
-	if (!i) return NULL;
+	status_code code;
+       
+	if (i)
+		(void) memset(i, 0, sizeof(*i));
 
-	if ((text_sz && !text))
-		return NULL_USAGE_ERR(&i->code, st, "zonefile text missing");
-
-	(void) memset(i, 0, sizeof(*i));
+	if ((code = parser_init(&i->p, text, text_sz, st))) {
+		if (i) i->code = code;
+		return NULL;
+	}
 	i->fd = -1;
 	i->line = i->cur = i->text = text;
 	i->end = text + text_sz;
@@ -608,10 +685,17 @@ zonefile_iter *zonefile_iter_init_fn_(ldns2_config *cfg,
 
 zonefile_iter *zonefile_iter_next_(zonefile_iter *i, return_status *st)
 {
+	status_code code = reset_cur_piece(&i->p, st);
+
+	if (code) {
+		if (i) i->code = code;
+		return NULL;
+	}
 	i->line = i->cur;
 	i->cur_piece = i->pieces;
 	if (!i->line)
 		return p_zfi_at_end(i, st);
+
 	else if (!p_zfi_get_piece(i, st))
 		return NULL;
 
