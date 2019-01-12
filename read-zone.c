@@ -67,12 +67,13 @@ void print_status(return_status *stat)
 		       );
 		break;
 	}
+	return_status_reset(stat);
 }
 
 int main(int argc, char **argv)
 {
 	return_status status = RETURN_STATUS_CLEAR;
-	ldns2_config cfg = LDNS2_CONFIG_DEFAULTS;
+	dns_config cfg = DNS_CONFIG_DEFAULTS;
 	dnsextlang_definitions *def;
 	zonefile_iter zi_spc, *zi = NULL;
 	size_t rr_count;

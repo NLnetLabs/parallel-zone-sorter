@@ -53,6 +53,22 @@ typedef struct parser {
 	int          pieces_malloced;
 } parser;
 
+static inline status_code parser_free_in_use(parser *p, return_status *st)
+{
+	if (!p)
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to the parser "
+		    "for which to free up in use space");
+	if (p->pieces) {
+		free(p->pieces);
+		p->pieces = NULL;
+		p->end_of_pieces = NULL;
+		p->cur_piece = NULL;
+		p->pieces_malloced = 0;
+	}
+	return STATUS_OK;
+}
+
 #define PARSER_CLEAR { NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, 0 }
 
 struct parse_piece {
@@ -170,6 +186,47 @@ static inline status_code increment_cur_piece(parser *p, return_status *st)
 		p->cur_piece = p->pieces + cur_piece_off;
 	}
 	return STATUS_OK;
+}
+
+static inline status_code parse_dereference(
+    parse_reference *r, return_status *st)
+{
+	if (!r)
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to the dereference parse_reference");
+	if (!r->prev)
+		return RETURN_DATA_ERR(st,
+		    "dereferencing already dereferenced reference");
+	if (r->next)
+		r->next->prev = r->prev;
+	*r->prev = r->next;
+	r->prev = NULL;
+	return STATUS_OK;
+}
+
+static inline status_code parse_reference_add(
+    parse_reference **refs, parse_reference *r, return_status *st)
+{
+	if (!refs)
+		return RETURN_USAGE_ERR(st,
+		    "missing references list "
+		    "for which to up the reference");
+	if (!r)
+		return RETURN_USAGE_ERR(st, "missing reference to up");
+
+	if (r->prev)
+		return RETURN_DATA_ERR(st,
+		    "cannot add an already added reference");
+
+	for (;;) {
+		if (!*refs || r->text < (*refs)->text) {
+			r->next = *refs;
+			r->prev =  refs;
+			*refs =  r;
+			return STATUS_OK;
+		}
+		refs = &(*refs)->next;
+	}
 }
 
 #endif /* #ifndef PARSER_H_ */

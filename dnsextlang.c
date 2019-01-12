@@ -43,7 +43,7 @@
 #include <sys/types.h>
 
 typedef struct del_file_iter {
-	ldns2_config *cfg;
+	dns_config *cfg;
 	ldns2_error err;
 
 	const char *fn;
@@ -369,7 +369,7 @@ static int p_scan_ftype(const char **p, const char *e)
 	}
 }
 
-dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(ldns2_config *cfg,
+dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(dns_config *cfg,
    ldns2_error *err, ldns2_parse_piece *piece, size_t n_pieces)
 {
 	dnsextlang_stanza *r;
@@ -513,14 +513,14 @@ static del_file_iter *p_dfi_init_fn(del_file_iter *i, const char *fn)
 		return p_dfi_init_fd(i, fd);
 }
 
-static inline void p_dfi_init(ldns2_config *cfg, del_file_iter *i)
+static inline void p_dfi_init(dns_config *cfg, del_file_iter *i)
 {
 	(void) memset(i, 0, sizeof(del_file_iter));
 	i->cfg = cfg;
 }
 
 dnsextlang_definitions *dnsextlang_definitions_new_from_text2(
-    ldns2_config *cfg, const char *text, size_t text_sz)
+    dns_config *cfg, const char *text, size_t text_sz)
 {
 	del_file_iter df_iter, *dfi;
 
@@ -532,7 +532,7 @@ dnsextlang_definitions *dnsextlang_definitions_new_from_text2(
 }
 
 dnsextlang_definitions *dnsextlang_definitions_new_from_fd2(
-    ldns2_config *cfg, int fd)
+    dns_config *cfg, int fd)
 {
 	del_file_iter df_iter, *dfi;
 
@@ -543,7 +543,7 @@ dnsextlang_definitions *dnsextlang_definitions_new_from_fd2(
 }
 
 dnsextlang_definitions *dnsextlang_definitions_new_from_fn2(
-    ldns2_config *cfg, const char *fn)
+    dns_config *cfg, const char *fn)
 {
 	del_file_iter df_iter, *dfi;
 

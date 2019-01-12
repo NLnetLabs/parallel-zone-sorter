@@ -31,11 +31,12 @@
  */
 
 #ifndef DNSEXTLANG_H_
-# define DNSEXTLANG_H_
-# include "ldns2.h"
-# include <ctype.h>
-# include <stdlib.h>
-# include <string.h>
+#define DNSEXTLANG_H_
+#include "dns_config.h"
+#include "ldns2.h"
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
 
 typedef enum dnsextlang_qual {
 	del_qual_C         = 1 <<  0, /* With N: Compressed dname
@@ -128,7 +129,7 @@ struct dnsextlang_rrradix {
 };
 typedef struct dnsextlang_definitions dnsextlang_definitions;
 struct dnsextlang_definitions {
-	ldns2_config           *cfg;
+	dns_config           *cfg;
 	dnsextlang_stanza     **stanzas_hi[256];
 	dnsextlang_definitions *fallback;
 	dnsextlang_rrradix     *rrradix;
@@ -228,13 +229,13 @@ static inline dnsextlang_stanza *dnsextlang_str2stanza(const char *rr_type)
 { return dnsextlang_str2stanza2(rr_type, 0); }
 
 dnsextlang_definitions *dnsextlang_definitions_new_from_text2(
-    ldns2_config *cfg, const char *text, size_t text_sz);
+    dns_config *cfg, const char *text, size_t text_sz);
 
 dnsextlang_definitions *dnsextlang_definitions_new_from_fd2(
-    ldns2_config *cfg, int fd);
+    dns_config *cfg, int fd);
 
 dnsextlang_definitions *dnsextlang_definitions_new_from_fn2(
-    ldns2_config *cfg, const char *fn);
+    dns_config *cfg, const char *fn);
 
 inline static dnsextlang_definitions *dnsextlang_definitions_new_from_text(
     const char *text, size_t text_sz)
