@@ -34,17 +34,29 @@
 #define DNS_CONFIG_H_
 #include <stdint.h>
 
-#define DNS_DEFAULT_TTL   3600
-#define DNS_DEFAULT_CLASS 1
+#ifndef DNS_DEFAULT_TTL
+#define DNS_DEFAULT_TTL     3600
+#endif
+#ifndef DNS_DEFAULT_CLASS
+#define DNS_DEFAULT_CLASS   1
+#endif
+#ifndef DNS_DEFAULT_ORIGIN
+#define DNS_DEFAULT_ORIGIN  ""
+#endif
 
-typedef struct dnsextlang_definitions dnsextlang_definitions;
+#ifndef DNS_DEFAULT_RRTYPES
+typedef struct  dnsextlang_definitions dnsextlang_definitions;
+extern dnsextlang_definitions *dnsextlang_default_definitions;
+#define DNS_DEFAULT_RRTYPES dnsextlang_default_definitions;
+#endif
 
 typedef struct dns_config {
 	uint32_t                default_ttl;
 	uint16_t                default_class;
+	const char             *default_origin;
 	dnsextlang_definitions *rrtypes;
 } dns_config;
 
-#define DNS_CONFIG_DEFAULTS { DNS_DEFAULT_TTL, DNS_DEFAULT_CLASS, NULL }
+#define DNS_CONFIG_DEFAULTS { DNS_DEFAULT_TTL, DNS_DEFAULT_CLASS, DNS_DEFAULT_ORIGIN, NULL }
 
 #endif /* #ifndef DNS_CONFIG_H_ */

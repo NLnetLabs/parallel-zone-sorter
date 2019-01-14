@@ -72,31 +72,29 @@ void print_status(return_status *stat)
 
 int main(int argc, char **argv)
 {
-	return_status status = RETURN_STATUS_CLEAR;
-	dns_config cfg = DNS_CONFIG_DEFAULTS;
+	dns_config              cfg = DNS_CONFIG_DEFAULTS;
+	return_status           st  = RETURN_STATUS_CLEAR;
 	dnsextlang_definitions *def;
-	zonefile_iter zi_spc, *zi = NULL;
-	size_t rr_count;
-	status_code code;
-
-	code = RETURN_IO_ERR(&status, "Hopsakidee");
-	print_status(&status);
-	(void) NULL_DATA_ERR(&code, &status, "hela hola");
-	print_status(&status);
-	code = RETURN_PARSE_ERR(&status, "Tjongejonge", "rrtypes.txt", 10, 20);
-	print_status(&status);
-
-	cfg.rrtypes = NULL;
-	def = dnsextlang_definitions_new_from_fn2(&cfg, "rrtypes.txt");
+	zonefile_iter  zi_spc, *zi  = NULL;
+	size_t rr_count = 0;
 
 	if (argc < 2 || argc > 3) {
 		printf("usage: %s <zonefile> [ <origin> ]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
-	rr_count = 0;
-	for ( zi = zonefile_iter_init_fn_(&cfg, &zi_spc, argv[1]
-	                                 , argc == 3 ? argv[2] : NULL, &status)
-	    ; zi ; zi = zonefile_iter_next_(zi, &status)) {
+	cfg.rrtypes = NULL;
+	if (argc == 3)
+		cfg.default_origin = argv[2];
+
+	//def = dnsextlang_definitions_new_from_fn_(&cfg, "rrtypes.txt", st);
+	def = dnsextlang_definitions_new_from_fn2(&cfg, "rrtypes.txt");
+	if (!def) {
+		print_status(&st);
+		return EXIT_FAILURE;
+	}
+
+	for ( zi = zonefile_iter_init_fn_(&cfg, &zi_spc, argv[1], &st)
+	    ; zi ; zi = zonefile_iter_next_(zi, &st)) {
 		dnsextlang_stanza *s = dnsextlang_str2stanza3(def,
 		    zi->rr_type->start, zi->rr_type->end - zi->rr_type->start);
 
@@ -128,8 +126,8 @@ int main(int argc, char **argv)
 #endif
 		rr_count++;
 	}
-	if (status.code)
-		print_status(&status);
+	if (st.code)
+		print_status(&st);
 	printf("Counted %zu RRs in zone %s\n", rr_count, argv[1]);
 	return EXIT_SUCCESS;
 }

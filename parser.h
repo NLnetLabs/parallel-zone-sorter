@@ -33,25 +33,142 @@
 #ifndef PARSER_H_ 
 #define PARSER_H_
 #include "return_status.h"
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <string.h>
 
+#ifndef DEFAULT_N_PARSER_PIECES
 #define DEFAULT_N_PARSER_PIECES 32
+#endif
 
-typedef struct parse_piece     parse_piece;
-typedef struct parse_reference parse_reference;
+#ifndef DEFAULT_PARSER_PAGESIZE
+#include <unistd.h>
+#define DEFAULT_PARSER_PAGESIZE sysconf(_SC_PAGESIZE)
+#endif
+
+#ifndef DEFAULT_PARSER_MUNMAP_TRESHOLD
+#define DEFAULT_PARSER_MUNMAP_TRESHOLD 32 /* in pages */
+#endif
+
+#ifndef DEFAULT_PARSER_MUNMAP_PRESERVE
+#define DEFAULT_PARSER_MUNMAP_PRESERVE  1 /* in pages */
+#endif
+
+typedef struct parse_piece parse_piece;
+typedef struct parse_ref   parse_reference;
+typedef struct parse_ref   parse_ref;
 typedef struct parser {
-	const char *text;
-	const char *end;
-	const char *cur;
-	const char *sol;     /* Start of line */
-	size_t      line_nr;
+	const char  *text;
+	const char  *end;
+	const char  *cur;
+
+	int          fd;
+	const char  *fn;
+	size_t       line_nr;
+	const char  *sol;     /* Start of line (for col_nr calculation) */
+
+	char        *to_munmap;
+	size_t       munmap_treshold;
+	size_t       munmap_preserve;
+	const char  *start;   /* Start of item returned on parse iteration
+	                       * start can be < pieces[0].start
+			       * start may not be munmapped
+			       */
+	parse_ref   *refs;    /* Positions within text which are referenced
+	                       * and thus may not be munmapped
+			       */
 
 	parse_piece *pieces;
 	parse_piece *end_of_pieces;
 	parse_piece *cur_piece;
 	int          pieces_malloced;
 } parser;
+
+#define PARSER_CLEAR          { .text = NULL     , .end  = NULL          \
+                              , .cur = NULL      , .fd = -1, .fn = NULL  \
+                              , .line_nr = 0     , .sol  = NULL          \
+                              , .to_munmap = NULL, .munmap_treshold = 0  \
+                                                 , .munmap_preserve = 0  \
+                              , .start = NULL    , .refs = NULL          \
+                              , .pieces = NULL   , .end_of_pieces = NULL \
+                              , .cur_piece = NULL, .pieces_malloced = 0  }
+
+#define PARSER_INIT(TEXT,LEN) { .text = (TEXT)   , .end = ((TEXT)+(LEN)) \
+                              , .cur = (TEXT)    , .fd = -1, .fn = NULL  \
+                              , .line_nr = 0     , .sol = (TEXT)         \
+                              , .to_munmap = NULL, .munmap_treshold = 0  \
+                                                 , .munmap_preserve = 0  \
+                              , .start = NULL    , .refs = NULL          \
+                              , .pieces = NULL   , .end_of_pieces = NULL \
+                              , .cur_piece = NULL, .pieces_malloced = 0  }
+
+struct parse_piece {
+	const char *start;
+	const char *end;
+	size_t      line_nr;
+	size_t      col_nr;
+	const char *fn;
+};
+
+struct parse_ref {
+	const char *text;
+	parse_ref  *next;
+	parse_ref **prev;
+};
+
+static inline status_code parser_init(parser *p,
+    const char *text, size_t len, return_status *st)
+{
+	if (!p)
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to the parser to initialize");
+	if (len && !text)
+		return RETURN_USAGE_ERR(st,
+		    "missing text to initialize parser");
+	*p = (parser)PARSER_INIT(text, len);
+	return STATUS_OK;
+}
+
+static inline status_code parser_init_fn(
+    parser *p, const char *fn, return_status *st)
+{
+	int fd;
+	struct stat statbuf;
+	char *text;
+
+	if (!p)
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to the parser to initialize");
+	if (!fn)
+		return RETURN_USAGE_ERR(st,
+		    "missing filename to initialize parser");
+
+	if ((fd = open(fn, O_RDONLY)) < 0)
+		return RETURN_IO_ERR(st, "opening file to initialize parser");
+
+	if (fstat(fd, &statbuf) < 0) {
+		close(fd);
+		return RETURN_IO_ERR(st,
+		    "determening file size with which to initialize parser");
+	}
+	if ((text = mmap( NULL, statbuf.st_size, PROT_READ
+	                , MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+		close(fd);
+		return RETURN_IO_ERR(st,
+		    "mmapping the file with which to initialize parser");
+	}
+	*p = (parser)PARSER_INIT(text, statbuf.st_size);
+	p->fd = fd; p->fn = fn; p->to_munmap = text;
+	p->munmap_treshold = DEFAULT_PARSER_MUNMAP_TRESHOLD
+	                   * DEFAULT_PARSER_PAGESIZE;
+	p->munmap_preserve = DEFAULT_PARSER_MUNMAP_PRESERVE
+	                   * DEFAULT_PARSER_PAGESIZE;
+	return STATUS_OK;
+}
 
 static inline status_code parser_free_in_use(parser *p, return_status *st)
 {
@@ -66,43 +183,54 @@ static inline status_code parser_free_in_use(parser *p, return_status *st)
 		p->cur_piece = NULL;
 		p->pieces_malloced = 0;
 	}
+	if (p->to_munmap && !p->refs && p->end) {
+		munmap(p->to_munmap, p->end - p->to_munmap);
+		p->to_munmap = NULL;
+	}
+	if (p->fd >= 0 && !p->to_munmap) {
+		close(p->fd);
+		p->fd = -1;
+	}
 	return STATUS_OK;
 }
 
-#define PARSER_CLEAR { NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, 0 }
-
-struct parse_piece {
-	const char *start;
-	const char *end;
-	size_t      line_nr;
-	size_t      col_nr;
-	const char *fn;
-};
-
-struct parse_reference {
-	const char       *text;
-	parse_reference  *next;
-	parse_reference **prev;
-};
-
-static inline status_code parser_init(parser *p,
-    const char *text, size_t len, return_status *st)
+/* Progressively munmap mmapped text that is not referenced (anymore) */
+static inline status_code parser_progressive_munmap(
+    parser *p, return_status *st)
 {
+	ssize_t n_to_munmap;
+
 	if (!p)
 		return RETURN_USAGE_ERR(st,
-		    "missing reference to the parser to initialize");
-	if (len && !text)
-		return RETURN_USAGE_ERR(st,
-		    "missing text to initialize parser");
-	p->text = text;
-	p->end = text + len;
-	p->cur = text;
-	p->sol = text;
-	p->line_nr = 0;
-	p->pieces = NULL;
-	p->end_of_pieces = NULL;
-	p->cur_piece = NULL;
-	p->pieces_malloced = 0;
+		    "missing reference to the parser "
+		    "with which to progressively munmap text");
+
+	if (!p->to_munmap)
+		return STATUS_OK;
+
+	if (p->refs)
+		n_to_munmap = p->refs->text - p->to_munmap;
+	else if (p->start)
+		n_to_munmap = p->start - p->to_munmap;
+	else
+		return STATUS_OK; /* parsing has not yet started */
+
+	if (n_to_munmap < 0)
+		return RETURN_DATA_ERR(st,
+		    "p->to_munmap progressed beyond referenced text");
+
+	if (n_to_munmap < p->munmap_treshold)
+		return STATUS_OK;
+
+	n_to_munmap /= p->munmap_treshold;
+	n_to_munmap *= p->munmap_treshold;
+	n_to_munmap -= p->munmap_preserve;
+
+	if (p->to_munmap + n_to_munmap > p->end)
+		return RETURN_DATA_ERR(st, "text referenced beyond end");
+
+	munmap(p->to_munmap, n_to_munmap);
+	p->to_munmap += n_to_munmap;
 	return STATUS_OK;
 }
 
@@ -125,8 +253,7 @@ static inline status_code reset_cur_piece(parser *p, return_status *st)
 	return STATUS_OK;
 }
 
-static inline status_code equip_cur_piece(
-    parser *p, const char *fn, return_status *st)
+static inline status_code equip_cur_piece(parser *p, return_status *st)
 {
 	if (!p)
 		return RETURN_USAGE_ERR(st,
@@ -142,7 +269,7 @@ static inline status_code equip_cur_piece(
 	p->cur_piece->start = p->cur;
 	p->cur_piece->line_nr = p->line_nr;
 	p->cur_piece->col_nr = p->cur - p->sol;
-	p->cur_piece->fn = fn;
+	p->cur_piece->fn = p->fn;
 	return STATUS_OK;
 }
 
@@ -188,12 +315,11 @@ static inline status_code increment_cur_piece(parser *p, return_status *st)
 	return STATUS_OK;
 }
 
-static inline status_code parse_dereference(
-    parse_reference *r, return_status *st)
+static inline status_code parse_dereference(parse_ref *r, return_status *st)
 {
 	if (!r)
 		return RETURN_USAGE_ERR(st,
-		    "missing reference to the dereference parse_reference");
+		    "missing reference to the parse_ref to dereference");
 	if (!r->prev)
 		return RETURN_DATA_ERR(st,
 		    "dereferencing already dereferenced reference");
@@ -204,20 +330,27 @@ static inline status_code parse_dereference(
 	return STATUS_OK;
 }
 
-static inline status_code parse_reference_add(
-    parse_reference **refs, parse_reference *r, return_status *st)
+static inline status_code parser_up_ref(
+    parser *p, parse_ref *r, return_status *st)
 {
-	if (!refs)
+	parse_ref **refs;
+
+	if (!p)
 		return RETURN_USAGE_ERR(st,
-		    "missing references list "
+		    "missing reference to the parser "
 		    "for which to up the reference");
 	if (!r)
-		return RETURN_USAGE_ERR(st, "missing reference to up");
+                return RETURN_USAGE_ERR(st, "missing reference to up");
+
+	if (r->text < p->text || r->text >= p->end)
+                return RETURN_DATA_ERR(st,
+		    "cannot up a reference outside of the parser text");
 
 	if (r->prev)
 		return RETURN_DATA_ERR(st,
 		    "cannot add an already added reference");
 
+	refs = &p->refs;
 	for (;;) {
 		if (!*refs || r->text < (*refs)->text) {
 			r->next = *refs;
