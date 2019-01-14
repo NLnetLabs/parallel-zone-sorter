@@ -43,20 +43,19 @@
 #ifndef DNS_DEFAULT_ORIGIN
 #define DNS_DEFAULT_ORIGIN  ""
 #endif
-
 #ifndef DNS_DEFAULT_RRTYPES
-typedef struct  dnsextlang_definitions dnsextlang_definitions;
-extern dnsextlang_definitions *dnsextlang_default_definitions;
-#define DNS_DEFAULT_RRTYPES dnsextlang_default_definitions;
+struct dnsextlang_def;
+#define DNS_DEFAULT_RRTYPES NULL;
 #endif
 
-typedef struct dns_config {
-	uint32_t                default_ttl;
-	uint16_t                default_class;
-	const char             *default_origin;
-	dnsextlang_definitions *rrtypes;
-} dns_config;
+#define DNS_CONFIG_DEFAULTS { DNS_DEFAULT_TTL   , DNS_DEFAULT_CLASS \
+                            , DNS_DEFAULT_ORIGIN, DEFAULT_RRTYPES   }
 
-#define DNS_CONFIG_DEFAULTS { DNS_DEFAULT_TTL, DNS_DEFAULT_CLASS, DNS_DEFAULT_ORIGIN, NULL }
+typedef struct dns_config {
+	uint32_t               default_ttl;
+	uint16_t               default_class;
+	const char            *default_origin;
+	struct dnsextlang_def *rrtypes;
+} dns_config;
 
 #endif /* #ifndef DNS_CONFIG_H_ */

@@ -32,11 +32,25 @@
 
 #ifndef DNSEXTLANG_H_
 #define DNSEXTLANG_H_
+#include "return_status.h"
 #include "dns_config.h"
-#include "ldns2.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef  DNS_DEFAULT_RRTYPES
+#undef  DNS_DEFAULT_RRTYPES
+#endif
+#define DNS_DEFAULT_RRTYPES dns_default_rrtypes
+
+#ifdef  DNS_CONFIG_DEFAULTS
+#undef  DNS_CONFIG_DEFAULTS
+#define DNS_CONFIG_DEFAULTS { DNS_DEFAULT_TTL   , DNS_DEFAULT_CLASS   \
+                            , DNS_DEFAULT_ORIGIN, DNS_DEFAULT_RRTYPES }
+#endif
+
+struct dnsextlang_def;
+extern struct dnsextlang_def *dns_default_rrtypes;
 
 typedef enum dnsextlang_qual {
 	del_qual_C         = 1 <<  0, /* With N: Compressed dname
@@ -123,129 +137,111 @@ typedef struct dnsextlang_stanza {
 
 typedef struct dnsextlang_rrradix dnsextlang_rrradix;
 struct dnsextlang_rrradix {
-	unsigned int        has_rr_type: 1;
-	uint16_t            rr_type;
 	dnsextlang_rrradix *next_char[48];
+	uint16_t            rrtype;
+	uint8_t         has_rrtype;
 };
-typedef struct dnsextlang_definitions dnsextlang_definitions;
-struct dnsextlang_definitions {
-	dns_config           *cfg;
-	dnsextlang_stanza     **stanzas_hi[256];
-	dnsextlang_definitions *fallback;
-	dnsextlang_rrradix     *rrradix;
+typedef struct dnsextlang_def dnsextlang_def;
+struct dnsextlang_def {
+	dnsextlang_stanza  **stanzas_hi[256];
+	dnsextlang_rrradix  *rrradix;
+	dnsextlang_def      *fallback;
 };
 
-extern dnsextlang_definitions *dnsextlang_default_definitions;
 
-#define DNSEXTLANG_DEFAULT_SETTINGS { dnsextlang_default_definitions }
-
-static inline dnsextlang_stanza *dnsextlang_type2stanza2(
-    dnsextlang_definitions *def, uint16_t rr_type)
+static inline dnsextlang_stanza *dnsextlang_type2stanza_(
+    dnsextlang_def *def, uint16_t rrtype)
 {
-	dnsextlang_stanza **s = !def ? NULL : def->stanzas_hi[rr_type >> 8];
-	return !s ? NULL : s[rr_type & 0x00FF];
+	dnsextlang_stanza **s;
+
+	if (!def) return dnsextlang_type2stanza_(dns_default_rrtypes, rrtype);
+	s = def->stanzas_hi[rrtype >> 8];
+	return !s ? NULL : s[rrtype & 0x00FF];
 }
 
-static inline dnsextlang_stanza *dnsextlang_type2stanza(uint16_t rr_type)
-{ return dnsextlang_type2stanza2(dnsextlang_default_definitions, rr_type); }
+static inline dnsextlang_stanza *dnsextlang_type2stanza(uint16_t rrtype)
+{ return dnsextlang_type2stanza_(NULL, rrtype); }
 
-static inline int dnsextlang_str2type3(
-    dnsextlang_definitions *def, const char *rr_type, uint8_t str_len)
+
+static inline int dnsextlang_str2type_(dnsextlang_def *def,
+    const char *rrtype, size_t rrtype_strlen, return_status *st)
 {
-	size_t l;
+	if (!def)
+		return dnsextlang_str2type_( dns_default_rrtypes
+		                           , rrtype, rrtype_strlen, st);
+	if (!rrtype)
+		return -RETURN_USAGE_ERR(st, "missing rrtype");
 
-	if (!def || !rr_type)
-		return -2;
-	if (!str_len) {
-		l = strlen(rr_type);
-		if (l > 255)
-			return -3;
-		str_len = l;
-	}
+	if (!rrtype_strlen)
+		rrtype_strlen = strlen(rrtype);
 	do {
 		dnsextlang_rrradix *rrr = def->rrradix;
-		const char *c = rr_type;
+		const char *c = rrtype;
+		size_t l = rrtype_strlen;
 
-		for ( l = str_len
+		for ( l = rrtype_strlen
 		    ; rrr && l
 		    ; rrr = rrr->next_char[(toupper(*c++)-'-') & 0x2F], l--)
 			; /* pass */
 
-		if (rrr && !l && rrr->has_rr_type)
-			return rrr->rr_type;
+		if (rrr && !l && rrr->has_rrtype)
+			return rrr->rrtype;
 
 		def = def->fallback;
 	} while (def);
 
-	if (str_len > 4
-	&& (rr_type[0] == 'T' || rr_type[0] == 't')
-	&& (rr_type[1] == 'Y' || rr_type[1] == 'y')
-	&& (rr_type[2] == 'P' || rr_type[2] == 'p')
-	&& (rr_type[3] == 'E' || rr_type[3] == 'e')) {
+	if (rrtype_strlen > 4
+	&& (rrtype[0] == 'T' || rrtype[0] == 't')
+	&& (rrtype[1] == 'Y' || rrtype[1] == 'y')
+	&& (rrtype[2] == 'P' || rrtype[2] == 'p')
+	&& (rrtype[3] == 'E' || rrtype[3] == 'e')) {
 
 		char numbuf[6], *endptr;
 		unsigned long int n;
 
-		if (str_len - 4 > sizeof(numbuf) - 1)
-			return -4;
+		if (rrtype_strlen - 4 > sizeof(numbuf) - 1)
+			return -RETURN_PARSE_ERR(st,
+			    "rrtype TYPE number too large", NULL, 0, 0);
 
-		(void) memcpy(numbuf, rr_type + 4, str_len - 4);
-		numbuf[str_len - 4] = 0;
+		(void) memcpy(numbuf, rrtype + 4, rrtype_strlen - 4);
+		numbuf[rrtype_strlen - 4] = 0;
 		n = strtoul(numbuf, &endptr, 10);
 
 		if (*endptr)
-			return -5;
+			return -RETURN_PARSE_ERR(st,
+			    "syntax error in rrtype TYPE number", NULL, 0, 0);
 		if (n > 65535)
-			return -6;
+			return -RETURN_PARSE_ERR(st,
+			    "rrtype TYPE number must be < 65536", NULL, 0, 0);
 		return n;
 	}
-	return -1;
+	return -RETURN_NOT_FOUND_ERR(st, "rrtype not found"); 
 }
 
-static inline int dnsextlang_str2type2(const char *rr_type, uint8_t str_len)
-{ return dnsextlang_str2type3(
-    dnsextlang_default_definitions, rr_type, str_len); }
-
-static inline int dnsextlang_str2type(const char *rr_type)
-{ return dnsextlang_str2type2(rr_type, 0); }
+static inline int dnsextlang_str2type(const char *rrtype)
+{ return dnsextlang_str2type_(NULL, rrtype, 0, NULL); }
 
 
-static inline dnsextlang_stanza *dnsextlang_str2stanza3(
-    dnsextlang_definitions *def, const char *rr_type, uint8_t str_len)
-{ 
-	int rr_type_int = dnsextlang_str2type3(def, rr_type, str_len);
+static inline dnsextlang_stanza *dnsextlang_str2stanza_(dnsextlang_def *def,
+    const char *rrtype, size_t rrtype_strlen, return_status *st)
+{ int rrtype_int = dnsextlang_str2type_(def, rrtype, rrtype_strlen, st)
+; return rrtype_int >= 0 ? dnsextlang_type2stanza_(def, rrtype_int) : NULL; }
 
-	if (rr_type_int < 0)
-		return NULL;
-	return dnsextlang_type2stanza2(def, rr_type_int);
-}
+static inline dnsextlang_stanza *dnsextlang_str2stanza(const char *rrtype)
+{ return dnsextlang_str2stanza_(NULL, rrtype, 0, NULL); }
 
-static inline dnsextlang_stanza *dnsextlang_str2stanza2(
-    const char *rr_type, uint8_t str_len)
-{ return dnsextlang_str2stanza3( dnsextlang_default_definitions
-                               , rr_type, str_len); }
+dnsextlang_def *dnsextlang_def_new_from_text_(
+    dns_config *cfg, const char *text, size_t text_len, return_status *st);
 
-static inline dnsextlang_stanza *dnsextlang_str2stanza(const char *rr_type)
-{ return dnsextlang_str2stanza2(rr_type, 0); }
+inline static dnsextlang_def *dnsextlang_def_new_from_text(
+    const char *text, size_t text_len)
+{ return dnsextlang_def_new_from_text_(NULL, text, text_len, NULL); }
 
-dnsextlang_definitions *dnsextlang_definitions_new_from_text2(
-    dns_config *cfg, const char *text, size_t text_sz);
 
-dnsextlang_definitions *dnsextlang_definitions_new_from_fd2(
-    dns_config *cfg, int fd);
+dnsextlang_def *dnsextlang_def_new_from_fn_(
+    dns_config *cfg, const char *fn, return_status *st);
 
-dnsextlang_definitions *dnsextlang_definitions_new_from_fn2(
-    dns_config *cfg, const char *fn);
-
-inline static dnsextlang_definitions *dnsextlang_definitions_new_from_text(
-    const char *text, size_t text_sz)
-{ return dnsextlang_definitions_new_from_text2(NULL, text, text_sz); }
-
-inline static dnsextlang_definitions *dnsextlang_definitions_new_from_fd(int fd)
-{ return dnsextlang_definitions_new_from_fd2(NULL, fd); }
-
-inline static dnsextlang_definitions *dnsextlang_definitions_new_from_fn(
-    const char *fn)
-{ return dnsextlang_definitions_new_from_fn2(NULL, fn); }
+inline static dnsextlang_def *dnsextlang_def_new_from_fn(const char *fn)
+{ return dnsextlang_def_new_from_fn_(NULL, fn, NULL); }
 
 #endif /* #ifndef DNSEXTLANG_H_ */

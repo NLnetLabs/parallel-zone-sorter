@@ -267,6 +267,7 @@ static inline status_code equip_cur_piece(parser *p, return_status *st)
 		    "missing data at cursor "
 		    "when equipping the current piece");
 	p->cur_piece->start = p->cur;
+	p->cur_piece->end = NULL;
 	p->cur_piece->line_nr = p->line_nr;
 	p->cur_piece->col_nr = p->cur - p->sol;
 	p->cur_piece->fn = p->fn;
@@ -312,6 +313,7 @@ static inline status_code increment_cur_piece(parser *p, return_status *st)
 		p->end_of_pieces = p->pieces + n_pieces;
 		p->cur_piece = p->pieces + cur_piece_off;
 	}
+	p->cur_piece->start = NULL;
 	return STATUS_OK;
 }
 

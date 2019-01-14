@@ -36,14 +36,15 @@
 #include <stdint.h>
 
 typedef enum status_code {
-	STATUS_OK           = 0,
-	STATUS_IO_ERR       = 1, /* Check errno for details                 */
-	STATUS_MEM_ERR      = 2, /* Failure to allocate memory              */
-	STATUS_PARSE_ERR    = 3, /* Syntax error while parsing strings      */
-	STATUS_USAGE_ERR    = 4, /* Wrong usage by library user. Check docs */
-	STATUS_DATA_ERR     = 5, /* Error caused by incoherent data structs */
-	STATUS_INTERNAL_ERR = 6, /* Internal deficiency! Submit bug report  */
-	STATUS_OVERFLOW_ERR = 7, /* Something didn't fit                    */
+	STATUS_OK            = 0,
+	STATUS_IO_ERR        = 1, /* Check errno for details                 */
+	STATUS_MEM_ERR       = 2, /* Failure to allocate memory              */
+	STATUS_PARSE_ERR     = 3, /* Syntax error while parsing strings      */
+	STATUS_USAGE_ERR     = 4, /* Wrong usage by library user. Check docs */
+	STATUS_DATA_ERR      = 5, /* Error caused by incoherent data structs */
+	STATUS_INTERNAL_ERR  = 6, /* Internal deficiency! Submit bug report  */
+	STATUS_OVERFLOW_ERR  = 7, /* Something didn't fit                    */
+	STATUS_NOT_FOUND_ERR = 8, /* Could not find requested item           */
 } status_code;
 
 static inline const char *status_code2str(status_code code)
@@ -110,19 +111,22 @@ static inline void return_status_reset(return_status *status)
       , RETURN_ERR(PARSE, (STAT), (MSG))) \
     : STATUS_PARSE_ERR \
     )
-#define   NULL_PARSE_ERR(...)      NULL_ERR(PARSE   , __VA_ARGS__)
+#define   NULL_PARSE_ERR(...)       NULL_ERR(PARSE    , __VA_ARGS__)
 
-#define RETURN_IO_ERR(...)       RETURN_ERR(IO      , __VA_ARGS__)
-#define   NULL_IO_ERR(...)         NULL_ERR(IO      , __VA_ARGS__)
-#define RETURN_MEM_ERR(...)      RETURN_ERR(MEM     , __VA_ARGS__)
-#define   NULL_MEM_ERR(...)        NULL_ERR(MEM     , __VA_ARGS__)
-#define RETURN_USAGE_ERR(...)    RETURN_ERR(USAGE   , __VA_ARGS__)
-#define   NULL_USAGE_ERR(...)      NULL_ERR(USAGE   , __VA_ARGS__)
-#define RETURN_DATA_ERR(...)     RETURN_ERR(DATA    , __VA_ARGS__)
-#define   NULL_DATA_ERR(...)       NULL_ERR(DATA    , __VA_ARGS__)
-#define RETURN_INTERNAL_ERR(...) RETURN_ERR(INTERNAL, __VA_ARGS__)
-#define   NULL_INTERNAL_ERR(...)   NULL_ERR(INTERNAL, __VA_ARGS__)
-#define RETURN_OVERFLOW_ERR(...) RETURN_ERR(OVERFLOW, __VA_ARGS__)
-#define   NULL_OVERFLOW_ERR(...)   NULL_ERR(OVERFLOW, __VA_ARGS__)
+#define RETURN_IO_ERR(...)        RETURN_ERR(IO       , __VA_ARGS__)
+#define   NULL_IO_ERR(...)          NULL_ERR(IO       , __VA_ARGS__)
+#define RETURN_MEM_ERR(...)       RETURN_ERR(MEM      , __VA_ARGS__)
+#define   NULL_MEM_ERR(...)         NULL_ERR(MEM      , __VA_ARGS__)
+#define RETURN_USAGE_ERR(...)     RETURN_ERR(USAGE    , __VA_ARGS__)
+#define   NULL_USAGE_ERR(...)       NULL_ERR(USAGE    , __VA_ARGS__)
+#define RETURN_DATA_ERR(...)      RETURN_ERR(DATA     , __VA_ARGS__)
+#define   NULL_DATA_ERR(...)        NULL_ERR(DATA     , __VA_ARGS__)
+#define RETURN_INTERNAL_ERR(...)  RETURN_ERR(INTERNAL , __VA_ARGS__)
+#define   NULL_INTERNAL_ERR(...)    NULL_ERR(INTERNAL , __VA_ARGS__)
+#define RETURN_OVERFLOW_ERR(...)  RETURN_ERR(OVERFLOW , __VA_ARGS__)
+#define   NULL_OVERFLOW_ERR(...)    NULL_ERR(OVERFLOW , __VA_ARGS__)
+#define RETURN_NOT_FOUND_ERR(...) RETURN_ERR(NOT_FOUND, __VA_ARGS__)
+#define   NULL_NOT_FOUND_ERR(...)   NULL_ERR(NOT_FOUND, __VA_ARGS__)
+
 
 #endif /* #ifndef RETURN_STATUS_H_ */

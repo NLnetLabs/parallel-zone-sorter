@@ -72,10 +72,10 @@ void print_status(return_status *stat)
 
 int main(int argc, char **argv)
 {
-	dns_config              cfg = DNS_CONFIG_DEFAULTS;
-	return_status           st  = RETURN_STATUS_CLEAR;
-	dnsextlang_definitions *def;
-	zonefile_iter  zi_spc, *zi  = NULL;
+	dns_config      cfg = DNS_CONFIG_DEFAULTS;
+	return_status   st  = RETURN_STATUS_CLEAR;
+	dnsextlang_def *def;
+	zonefile_iter   zi_spc, *zi  = NULL;
 	size_t rr_count = 0;
 
 	if (argc < 2 || argc > 3) {
@@ -86,8 +86,7 @@ int main(int argc, char **argv)
 	if (argc == 3)
 		cfg.default_origin = argv[2];
 
-	//def = dnsextlang_definitions_new_from_fn_(&cfg, "rrtypes.txt", st);
-	def = dnsextlang_definitions_new_from_fn2(&cfg, "rrtypes.txt");
+	def = dnsextlang_def_new_from_fn_(&cfg, "rrtypes.txt", &st);
 	if (!def) {
 		print_status(&st);
 		return EXIT_FAILURE;
@@ -95,14 +94,11 @@ int main(int argc, char **argv)
 
 	for ( zi = zonefile_iter_init_fn_(&cfg, &zi_spc, argv[1], &st)
 	    ; zi ; zi = zonefile_iter_next_(zi, &st)) {
-		dnsextlang_stanza *s = dnsextlang_str2stanza3(def,
-		    zi->rr_type->start, zi->rr_type->end - zi->rr_type->start);
-
-		if (!s) {
-			fprintf( stderr, "Unknown RRTYPE: %.*s\n"
-			       , (int)(zi->rr_type->end - zi->rr_type->start)
-			       , zi->rr_type->start);
-
+		dnsextlang_stanza *s;
+	       
+		if (!(s = dnsextlang_str2stanza_(def, zi->rr_type->start,
+		    zi->rr_type->end - zi->rr_type->start, &st))) {
+			print_status(&st);
 		}
 #if 0
 		else if (s->n_fields + 1 != (zi->current_piece - zi->rr_type)) {

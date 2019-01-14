@@ -29,8 +29,8 @@
  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#include "ldns2-int.h"
 #include "dnsextlang.h"
+#include "parser.h"
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -41,181 +41,6 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
-typedef struct del_file_iter {
-	dns_config *cfg;
-	ldns2_error err;
-
-	const char *fn;
-	int         fd;
-
-	const char *text;
-	const char *end;
-	const char *cur;
-
-	size_t      line_nr;
-
-	ldns2_parse_piece   *cur_piece;
-	ldns2_parse_piece   *pieces;
-	size_t    n_pieces;
-	unsigned    pieces_malloced: 1;
-} del_file_iter;
-
-static del_file_iter *p_dfi_cleanup(del_file_iter *i)
-{
-	if (i->pieces && i->pieces_malloced) {
-		free(i->pieces);
-		i->pieces = NULL;
-		i->n_pieces = 0;
-		i->cur_piece = NULL;
-		i->pieces_malloced = 0;
-	}
-	return NULL;
-}
-
-static del_file_iter *p_dfi_at_end(del_file_iter *i)
-{
-	if (i->cur_piece == i->pieces && !i->cur_piece->start)
-		return p_dfi_cleanup(i);
-
-	else if (i->cur_piece->start && !i->cur_piece->end) {
-		i->cur_piece->end = i->cur;
-		i->cur_piece += 1;
-		i->cur_piece->start = NULL;
-	}
-	return i;
-}
-
-static del_file_iter *p_dfi_get_fields(del_file_iter *i)
-{
-	while (i->cur < i->end) {
-		const char *sol = i->cur;
-
-		if (isalpha(*i->cur)) {
-			/* Start of stanza */
-			return p_dfi_at_end(i);
-		}
-		while (*i->cur != '\n' && isspace(*i->cur)) {
-			if (++i->cur >= i->end)
-				return p_dfi_at_end(i);
-		}
-		switch (*i->cur) {
-		case '#' :
-			if (++i->cur >= i->end)
-				return p_dfi_at_end(i);
-			while (*i->cur != '\n') {
-				if (++i->cur >= i->end)
-					return p_dfi_at_end(i);
-			}
-			i->cur += 1;
-			i->line_nr += 1;
-			break;
-		case '\n':
-			i->cur += 1;
-			i->line_nr += 1;
-			break;
-		default:
-			/* Start of field */
-			i->cur_piece->start = i->cur;
-			i->cur_piece->fn = i->fn;
-			i->cur_piece->line_nr = i->line_nr;
-			i->cur_piece->col_nr = i->cur - sol;
-			while (*i->cur != '\n' && *i->cur != '#') {
-				if (i->cur[0] == '\\' && i->cur + 1 < i->end
-				&&  i->cur[1] == '\n') {
-					i->line_nr += 1;
-					i->cur += 1;
-				}
-				if (++i->cur >= i->end)
-					return p_dfi_at_end(i);
-			}
-			i->cur_piece->end = i->cur;
-			i->cur_piece += 1;
-			i->cur_piece->start = NULL;
-			i->cur_piece->end = NULL;
-			if (*i->cur == '#') {
-				i->cur += 1;
-				while (*i->cur != '\n') {
-					if (++i->cur >= i->end)
-						return p_dfi_at_end(i);
-				}
-			}
-			i->cur += 1;
-			i->line_nr += 1;
-			break;
-		}
-	}
-	return p_dfi_at_end(i);
-}
-
-static del_file_iter *p_dfi_next(del_file_iter *i)
-{
-	i->cur_piece = i->pieces;
-	i->cur_piece->start = NULL;
-	i->cur_piece->end = NULL;
-	while (i->cur < i->end) {
-		const char *sol = i->cur;
-
-		if (isalpha(*i->cur)) {
-			i->cur_piece->start = i->cur;
-			i->cur_piece->fn = i->fn;
-			i->cur_piece->line_nr = i->line_nr;
-			i->cur_piece->col_nr = 0;
-			if (++i->cur >= i->end)
-				return p_dfi_at_end(i);
-			while (*i->cur != '\n' && *i->cur != '#') {
-				if (i->cur[0] == '\\' && i->cur + 1 < i->end
-				&&  i->cur[1] == '\n') {
-					i->line_nr += 1;
-					i->cur += 1;
-				}
-				if (++i->cur >= i->end)
-					return p_dfi_at_end(i);
-			}
-			i->cur_piece->end = i->cur;
-			i->cur_piece += 1;
-			i->cur_piece->start = NULL;
-			i->cur_piece->end = NULL;
-			if (*i->cur == '#') {
-				i->cur += 1;
-				while (*i->cur != '\n') {
-					if (++i->cur >= i->end)
-						return p_dfi_at_end(i);
-				}
-			}
-			i->cur += 1;
-			i->line_nr += 1;
-			return p_dfi_get_fields(i);
-		}
-		while (*i->cur != '\n' && isspace(*i->cur)) {
-			if (++i->cur >= i->end)
-				return p_dfi_at_end(i);
-		}
-		switch (*i->cur) {
-		case '#' :
-			if (++i->cur >= i->end)
-				return p_dfi_at_end(i);
-			while (*i->cur != '\n') {
-				if (++i->cur >= i->end)
-					return p_dfi_at_end(i);
-			}
-			i->cur += 1;
-			i->line_nr += 1;
-			break;
-		case '\n':
-			i->cur += 1;
-			i->line_nr += 1;
-			break;
-		default:
-			return LDNS2_SYNTAX_ERROR( &i->err
-			                         , "Stanza's begin at "
-			                           "start of line"
-						 , i->fn
-			                         , i->line_nr, (i->cur - sol));
-		}
-	}
-	return p_dfi_at_end(i);
-}
 
 dnsextlang_stanza *dnsextlang_stanza_free(dnsextlang_stanza *s)
 {
@@ -229,8 +54,8 @@ dnsextlang_stanza *dnsextlang_stanza_free(dnsextlang_stanza *s)
 	return NULL;
 }
 
-static void dnsextlang_definitions_add_stanza(
-    dnsextlang_definitions *d, dnsextlang_stanza *s)
+static status_code dnsextlang_def_add_stanza(
+    dnsextlang_def *d, dnsextlang_stanza *s, return_status *st)
 {
 	dnsextlang_rrradix **rrr_p;
 	const char *name;
@@ -252,11 +77,11 @@ static void dnsextlang_definitions_add_stanza(
 			name++;
 		}
 		if (*rrr_p && !*name) {
-			assert((*rrr_p)->has_rr_type == 1);
-			assert((*rrr_p)->rr_type == s->number);
+			assert((*rrr_p)->has_rrtype == 1);
+			assert((*rrr_p)->rrtype == s->number);
 
-			(*rrr_p)->has_rr_type = 0;
-			(*rrr_p)->rr_type = 0;
+			(*rrr_p)->has_rrtype = 0;
+			(*rrr_p)->rrtype = 0;
 		}
 		dnsextlang_stanza_free(
 		    d->stanzas_hi[s->number >> 8][s->number & 0x00FF]);
@@ -273,9 +98,9 @@ static void dnsextlang_definitions_add_stanza(
 		rrr_p = &(*rrr_p)->next_char[(toupper(*name) - '-') & 0x2F];
 		name++;
 	}
-	if ((*rrr_p)->has_rr_type && (*rrr_p)->rr_type != s->number) {
-		uint8_t to_rm_hi = (*rrr_p)->rr_type >> 8;
-		uint8_t to_rm_lo = (*rrr_p)->rr_type & 0x00FF;
+	if ((*rrr_p)->has_rrtype && (*rrr_p)->rrtype != s->number) {
+		uint8_t to_rm_hi = (*rrr_p)->rrtype >> 8;
+		uint8_t to_rm_lo = (*rrr_p)->rrtype & 0x00FF;
 
 		if (d->stanzas_hi[to_rm_hi]
 		 && d->stanzas_hi[to_rm_hi][to_rm_lo]) {
@@ -284,8 +109,9 @@ static void dnsextlang_definitions_add_stanza(
 			d->stanzas_hi[to_rm_hi][to_rm_lo] = NULL;
 		}
 	}
-	(*rrr_p)->has_rr_type = 1;
-	(*rrr_p)->rr_type = s->number;
+	(*rrr_p)->has_rrtype = 1;
+	(*rrr_p)->rrtype = s->number;
+	return STATUS_OK;
 }
 
 static const char *p_del_strdup(const char *start, const char *end)
@@ -369,8 +195,8 @@ static int p_scan_ftype(const char **p, const char *e)
 	}
 }
 
-dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(dns_config *cfg,
-   ldns2_error *err, ldns2_parse_piece *piece, size_t n_pieces)
+dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(
+   parse_piece *piece, size_t n_pieces, return_status *st)
 {
 	dnsextlang_stanza *r;
 	const char *s, *e;
@@ -380,7 +206,6 @@ dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(dns_config *cfg,
        
 	assert(piece);
 	assert(n_pieces);
-	(void)cfg;
 
 	r = calloc(1, sizeof(dnsextlang_stanza)
 	            + sizeof(dnsextlang_field) * (n_pieces - 1));
@@ -446,113 +271,183 @@ dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(dns_config *cfg,
 	return r;
 }
 
-dnsextlang_definitions *p_dfi2def(del_file_iter *i)
+static inline parser *p_dfi_return(parser *p, return_status *st)
 {
-	dnsextlang_definitions *d = calloc(1, sizeof(dnsextlang_definitions));
+	if (p->cur_piece == p->pieces && !p->cur_piece->start) {
+		assert(p->cur == p->end);
+		(void) parser_free_in_use(p, NULL);
+		return NULL;
+	}
+	if (p->cur_piece->start && !p->cur_piece->end) {
+		p->cur_piece->end = p->cur;
+		p->cur_piece += 1;
+		p->cur_piece->start = NULL;
+	}
+	assert(p->pieces->start);
+	p->start = p->pieces->start;
+	return parser_progressive_munmap(p, st) ? NULL : p;
+}
 
-	if (!d)
-		return LDNS2_MEM_ERROR(&i->err, "cannot allocate space for "
-		                                "dnsextlang definitions");
-	d->cfg = i->cfg;
+static inline parser *p_dfi_get_fields(parser *p, return_status *st)
+{
+	while (p->cur < p->end) {
+		p->sol = p->cur;
 
-	while (i) {
+		if (isalpha(*p->cur)) /* Start of stanza */
+			return p_dfi_return(p, st);
+
+		while (*p->cur != '\n' && isspace(*p->cur)) {
+			if (++p->cur >= p->end)
+				return p_dfi_return(p, st);
+		}
+		switch (*p->cur) {
+		case '#' :
+			if (++p->cur >= p->end)
+				return p_dfi_return(p, st);
+			while (*p->cur != '\n') {
+				if (++p->cur >= p->end)
+					return p_dfi_return(p, st);
+			}
+			p->cur += 1;
+			p->line_nr += 1;
+			break;
+		case '\n':
+			p->cur += 1;
+			p->line_nr += 1;
+			break;
+		default:
+			/* Start of field */
+			if (equip_cur_piece(p, st))
+				return NULL;
+			while (*p->cur != '\n' && *p->cur != '#') {
+				if (p->cur[0] == '\\' && p->cur + 1 < p->end
+				&&  p->cur[1] == '\n') {
+					p->line_nr += 1;
+					p->cur += 1;
+				}
+				if (++p->cur >= p->end)
+					return p_dfi_return(p, st);
+			}
+			if (increment_cur_piece(p, st))
+				return NULL;
+
+			if (*p->cur == '#') {
+				p->cur += 1;
+				while (*p->cur != '\n') {
+					if (++p->cur >= p->end)
+						return p_dfi_return(p, st);
+				}
+			}
+			p->cur += 1;
+			p->line_nr += 1;
+			break;
+		}
+	}
+	return p_dfi_return(p, st);
+}
+
+static inline parser *p_dfi_next(parser *p, return_status *st)
+{
+	if (reset_cur_piece(p, st))
+		return NULL;
+	while (p->cur < p->end) {
+		p->sol = p->cur;
+
+		if (isalpha(*p->cur)) {
+			if (equip_cur_piece(p, st))
+				return NULL;
+			if (++p->cur >= p->end)
+				return p_dfi_return(p, st);
+			while (*p->cur != '\n' && *p->cur != '#') {
+				if (p->cur[0] == '\\' && p->cur + 1 < p->end
+				&&  p->cur[1] == '\n') {
+					p->line_nr += 1;
+					p->cur += 1;
+				}
+				if (++p->cur >= p->end)
+					return p_dfi_return(p, st);
+			}
+			if (increment_cur_piece(p, st))
+				return NULL;
+			if (*p->cur == '#') {
+				p->cur += 1;
+				while (*p->cur != '\n') {
+					if (++p->cur >= p->end)
+						return p_dfi_return(p, st);
+				}
+			}
+			p->cur += 1;
+			p->line_nr += 1;
+			return p_dfi_get_fields(p, st);
+		}
+		while (*p->cur != '\n' && isspace(*p->cur)) {
+			if (++p->cur >= p->end)
+				return p_dfi_return(p, st);
+		}
+		switch (*p->cur) {
+		case '#' :
+			if (++p->cur >= p->end)
+				return p_dfi_return(p, st);
+			while (*p->cur != '\n') {
+				if (++p->cur >= p->end)
+					return p_dfi_return(p, st);
+			}
+			p->cur += 1;
+			p->line_nr += 1;
+			break;
+		case '\n':
+			p->cur += 1;
+			p->line_nr += 1;
+			break;
+		default:
+			(void) RETURN_PARSE_ERR(st,
+			    "dnsextlang stanza's start at beginning of a line",
+			    p->fn, p->line_nr, p->cur - p->sol);
+			return NULL;
+		}
+	}
+	return p_dfi_return(p, st);
+}
+
+dnsextlang_def *p_dfi2def(dns_config *cfg, parser *i, return_status *st)
+{
+	dnsextlang_def *d = calloc(1, sizeof(dnsextlang_def));
+
+	if (!d) {
+		(void) RETURN_MEM_ERR(st,
+		    "cannot allocate space for dnsextlang definitions");
+		return NULL;
+	}
+
+	while ((i = p_dfi_next(i, st))) {
 		dnsextlang_stanza *s;
 
-		if (!(s = dnsextlang_stanza_new_from_pieces(d->cfg, &i->err,
-		    i->pieces, (i->cur_piece - i->pieces))))
-			return NULL;
+		if (!(s = dnsextlang_stanza_new_from_pieces(
+		    i->pieces, (i->cur_piece - i->pieces), st)))
+			break;
 
-		dnsextlang_definitions_add_stanza(d, s);
-		i = p_dfi_next(i);
+		if (dnsextlang_def_add_stanza(d, s, st))
+			break;
 	}
-	return d;
+	if (i) parser_free_in_use(i, NULL);
+	// TODO! return st->code ? dnsexitlang_def_free(d) : d;
+	return st->code ? NULL : d;
 }
 
-static del_file_iter *p_dfi_init_text(
-    del_file_iter *i, const char *text, size_t text_sz)
+dnsextlang_def *dnsextlang_def_new_from_text_(
+    dns_config *cfg, const char *text, size_t text_len, return_status *st)
 {
-	i->line_nr = 1;
-	i->text = i->cur = text;
-	i->end = text + text_sz;
-
-	i->n_pieces = 16;
-	if (!(i->pieces = calloc(i->n_pieces, sizeof(ldns2_parse_piece))))
-                return LDNS2_MEM_ERROR(&i->err, "allocating parser pieces "
-                                       "when initializing zonefile iterator");
-	i->pieces_malloced = 1;
-
-	return p_dfi_next(i);
+	parser p;
+	return parser_init(&p, text, text_len, st)
+	     ? NULL : p_dfi2def(cfg, &p, st);
 }
 
-static del_file_iter *p_dfi_init_fd(del_file_iter *i, int fd)
+dnsextlang_def *dnsextlang_def_new_from_fn_(
+    dns_config *cfg, const char *fn, return_status *st)
 {
-	struct stat statbuf;
-	char *text;
-
-	i->fd = fd;
-	if (fstat(fd, &statbuf) < 0)
-		return LDNS2_IO_ERROR(&i->err,
-		                      "determining size of dnsextlang file");
-
-	if ((text = mmap( NULL, statbuf.st_size, PROT_READ
-	                , MAP_PRIVATE, fd, 0)) == MAP_FAILED)
-                return LDNS2_IO_ERROR(&i->err
-		                     ,"allocating memory for dnsextlang file");
-	else
-		return p_dfi_init_text(i, text, statbuf.st_size);
+	parser p;
+	return parser_init_fn(&p, fn, st) ? NULL : p_dfi2def(cfg, &p, st);
 }
 
-static del_file_iter *p_dfi_init_fn(del_file_iter *i, const char *fn)
-{
-	int fd;
-
-	i->fn = fn;
-	if ((fd = open(fn, O_RDONLY)) < 0)
-		return LDNS2_IO_ERROR(&i->err, "opening dnsextlang file");
-	else
-		return p_dfi_init_fd(i, fd);
-}
-
-static inline void p_dfi_init(dns_config *cfg, del_file_iter *i)
-{
-	(void) memset(i, 0, sizeof(del_file_iter));
-	i->cfg = cfg;
-}
-
-dnsextlang_definitions *dnsextlang_definitions_new_from_text2(
-    dns_config *cfg, const char *text, size_t text_sz)
-{
-	del_file_iter df_iter, *dfi;
-
-	p_dfi_init(cfg, &df_iter);
-	if (!(dfi = p_dfi_init_text(&df_iter, text, text_sz)))
-		return NULL;
-
-	return p_dfi2def(dfi);
-}
-
-dnsextlang_definitions *dnsextlang_definitions_new_from_fd2(
-    dns_config *cfg, int fd)
-{
-	del_file_iter df_iter, *dfi;
-
-	p_dfi_init(cfg, &df_iter);
-	if (!(dfi = p_dfi_init_fd(&df_iter, fd)))
-		return NULL;
-	return p_dfi2def(dfi);
-}
-
-dnsextlang_definitions *dnsextlang_definitions_new_from_fn2(
-    dns_config *cfg, const char *fn)
-{
-	del_file_iter df_iter, *dfi;
-
-	p_dfi_init(cfg, &df_iter);
-	if (!(dfi = p_dfi_init_fn(&df_iter, fn)))
-		return NULL;
-	return p_dfi2def(dfi);
-}
-
-static dnsextlang_definitions p_default_definitions = { 0 };
-dnsextlang_definitions *dnsextlang_default_definitions =
-    &p_default_definitions;
+static dnsextlang_def p_dns_default_rrtypes = { 0 };
+dnsextlang_def *dns_default_rrtypes = &p_dns_default_rrtypes;
