@@ -1,10 +1,10 @@
 CC=gcc
-CFLAGS=-Ofast -Wall -Wpedantic -Werror -pg
-#CFLAGS=-Wall -Wpedantic -Werror -pg -g
+#CFLAGS=-Ofast -Wall -Wpedantic -Werror -pg
+CFLAGS=-Wall -Wpedantic -Werror -pg -g
 LDFLAGS=-pg
 PROGRAMS=read-zone
 SORT_ZONE_OBJS=sort-zone.o
-READ_ZONE_OBJS=read-zone.o presentation.o dnsextlang.o
+READ_ZONE_OBJS=read-zone.o presentation.o dnsextlang.o rrtypes.o
 
 default: all
 all: $(PROGRAMS)

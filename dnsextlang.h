@@ -34,6 +34,7 @@
 #define DNSEXTLANG_H_
 #include "return_status.h"
 #include "dns_config.h"
+#include "ldh_radix.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,7 +94,7 @@ typedef enum dnsextlang_ftype {
 	del_ftype_N , del_ftype_S , del_ftype_B32, del_ftype_B64,
 	del_ftype_X , del_ftype_Z
 } dnsextlang_ftype;
-	
+
 static inline uint8_t dnsextlang_wf_field_len(
     dnsextlang_ftype ftype, dnsextlang_qual quals) {
 	if (ftype < del_ftype_R)
@@ -118,10 +119,8 @@ typedef struct dnsextlang_symbol {
 
 typedef struct dnsextlang_field {
 	dnsextlang_ftype   ftype;
-	const char        *name;
 	dnsextlang_qual    quals;
-	size_t           n_symbols;
-	dnsextlang_symbol *symbols;
+	ldh_map            symbols;
 	const char        *tag;
 	const char        *description;
 } dnsextlang_field;
@@ -132,7 +131,7 @@ typedef struct dnsextlang_stanza {
 	uint8_t            options[26];
 	const char        *description;
 	size_t           n_fields;
-	dnsextlang_field   fields[];
+	dnsextlang_field  *fields;
 } dnsextlang_stanza;
 
 typedef struct dnsextlang_rrradix dnsextlang_rrradix;
@@ -141,6 +140,7 @@ struct dnsextlang_rrradix {
 	uint16_t            rrtype;
 	uint8_t         has_rrtype;
 };
+
 typedef struct dnsextlang_def dnsextlang_def;
 struct dnsextlang_def {
 	dnsextlang_stanza  **stanzas_hi[256];
@@ -149,25 +149,25 @@ struct dnsextlang_def {
 };
 
 
-static inline dnsextlang_stanza *dnsextlang_type2stanza_(
+static inline dnsextlang_stanza *dnsextlang_get_stanza_(
     dnsextlang_def *def, uint16_t rrtype)
 {
 	dnsextlang_stanza **s;
 
-	if (!def) return dnsextlang_type2stanza_(dns_default_rrtypes, rrtype);
+	if (!def) return dnsextlang_get_stanza_(dns_default_rrtypes, rrtype);
 	s = def->stanzas_hi[rrtype >> 8];
 	return !s ? NULL : s[rrtype & 0x00FF];
 }
 
-static inline dnsextlang_stanza *dnsextlang_type2stanza(uint16_t rrtype)
-{ return dnsextlang_type2stanza_(NULL, rrtype); }
+static inline dnsextlang_stanza *dnsextlang_get_stanza(uint16_t rrtype)
+{ return dnsextlang_get_stanza_(NULL, rrtype); }
 
 
-static inline int dnsextlang_str2type_(dnsextlang_def *def,
+static inline int dnsextlang_get_type_(dnsextlang_def *def,
     const char *rrtype, size_t rrtype_strlen, return_status *st)
 {
 	if (!def)
-		return dnsextlang_str2type_( dns_default_rrtypes
+		return dnsextlang_get_type_( dns_default_rrtypes
 		                           , rrtype, rrtype_strlen, st);
 	if (!rrtype)
 		return -RETURN_USAGE_ERR(st, "missing rrtype");
@@ -218,17 +218,17 @@ static inline int dnsextlang_str2type_(dnsextlang_def *def,
 	return -RETURN_NOT_FOUND_ERR(st, "rrtype not found"); 
 }
 
-static inline int dnsextlang_str2type(const char *rrtype)
-{ return dnsextlang_str2type_(NULL, rrtype, 0, NULL); }
+static inline int dnsextlang_get_type(const char *rrtype)
+{ return dnsextlang_get_type_(NULL, rrtype, 0, NULL); }
 
 
-static inline dnsextlang_stanza *dnsextlang_str2stanza_(dnsextlang_def *def,
+static inline dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
     const char *rrtype, size_t rrtype_strlen, return_status *st)
-{ int rrtype_int = dnsextlang_str2type_(def, rrtype, rrtype_strlen, st)
-; return rrtype_int >= 0 ? dnsextlang_type2stanza_(def, rrtype_int) : NULL; }
+{ int rrtype_int = dnsextlang_get_type_(def, rrtype, rrtype_strlen, st)
+; return rrtype_int >= 0 ? dnsextlang_get_stanza_(def, rrtype_int) : NULL; }
 
-static inline dnsextlang_stanza *dnsextlang_str2stanza(const char *rrtype)
-{ return dnsextlang_str2stanza_(NULL, rrtype, 0, NULL); }
+static inline dnsextlang_stanza *dnsextlang_lookup(const char *rrtype)
+{ return dnsextlang_lookup_(NULL, rrtype, 0, NULL); }
 
 dnsextlang_def *dnsextlang_def_new_from_text_(
     dns_config *cfg, const char *text, size_t text_len, return_status *st);
@@ -243,5 +243,9 @@ dnsextlang_def *dnsextlang_def_new_from_fn_(
 
 inline static dnsextlang_def *dnsextlang_def_new_from_fn(const char *fn)
 { return dnsextlang_def_new_from_fn_(NULL, fn, NULL); }
+
+void dnsextlang_def_free(dnsextlang_def *def);
+
+void dnsextlang_export_def2c(dnsextlang_def *def);
 
 #endif /* #ifndef DNSEXTLANG_H_ */
