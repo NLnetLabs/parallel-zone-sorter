@@ -758,7 +758,7 @@ static inline parser *p_dfi_return(parser *p, return_status *st)
 {
 	if (p->cur_piece == p->pieces && !p->cur_piece->start) {
 		assert(p->cur == p->end);
-		(void) parser_free_in_use(p, NULL);
+		parser_free_in_use(p);
 		return NULL; /* End of text to parse */
 	}
 	if (p->cur_piece->start && !p->cur_piece->end) {
@@ -895,10 +895,16 @@ static inline parser *p_dfi_next(parser *p, return_status *st)
 dnsextlang_def *p_dfi2def(dns_config *cfg, parser *i, return_status *st)
 {
 	dnsextlang_def *d = calloc(1, sizeof(dnsextlang_def));
+	parser *j = i;
+	return_status my_st = RETURN_STATUS_CLEAR;
+
+	if (!st)
+		st = &my_st;
 
 	if (!d) {
 		(void) RETURN_MEM_ERR(st,
 		    "cannot allocate space for dnsextlang definitions");
+		parser_free_in_use(j);
 		return NULL;
 	}
 
@@ -912,8 +918,8 @@ dnsextlang_def *p_dfi2def(dns_config *cfg, parser *i, return_status *st)
 		if (p_del_def_add_stanza(d, s, st))
 			break;
 	}
-	if (i)
-		(void) parser_free_in_use(i, NULL);
+	if (i || st->code)
+		parser_free_in_use(j);
 
 	if (st->code) {
 		dnsextlang_def_free(d);

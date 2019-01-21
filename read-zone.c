@@ -74,10 +74,6 @@ int main(int argc, char **argv)
 {
 	dns_config      cfg = DNS_CONFIG_DEFAULTS;
 	return_status   st  = RETURN_STATUS_CLEAR;
-
-#if 0
-	return EXIT_SUCCESS;
-#else
 	zonefile_iter   zi_spc, *zi  = NULL;
 	size_t rr_count = 0;
 
@@ -122,10 +118,12 @@ int main(int argc, char **argv)
 		}
 		rr_count++;
 	}
-	if (st.code)
+	if (st.code) {
 		print_status(&st);
+		zonefile_iter_free_in_use(&zi_spc);
+
+	}
 	printf("Counted %zu RRs in zone %s\n", rr_count, argv[1]);
-	return EXIT_SUCCESS;
-#endif
+	return st.code ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 

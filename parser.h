@@ -170,13 +170,12 @@ static inline status_code parser_init_fn(
 	return STATUS_OK;
 }
 
-static inline status_code parser_free_in_use(parser *p, return_status *st)
+static inline void parser_free_in_use(parser *p)
 {
 	if (!p)
-		return RETURN_USAGE_ERR(st,
-		    "missing reference to the parser "
-		    "for which to free up in use space");
-	if (p->pieces) {
+		return;
+
+      	if (p->pieces) {
 		free(p->pieces);
 		p->pieces = NULL;
 		p->end_of_pieces = NULL;
@@ -191,7 +190,6 @@ static inline status_code parser_free_in_use(parser *p, return_status *st)
 		close(p->fd);
 		p->fd = -1;
 	}
-	return STATUS_OK;
 }
 
 /* Progressively munmap mmapped text that is not referenced (anymore) */

@@ -40,14 +40,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i, return_status *st)
+void zonefile_iter_free_in_use(zonefile_iter *i)
 {
-	if (i->p.cur) {
-		assert(i->p.cur == i->p.end);
-		i->p.cur = NULL;
-		i->p.cur_piece->start = NULL;
-		return i;
-	}
 	(void) parse_dereference(&i->origin.r, NULL);
 	(void) parse_dereference(&i->owner.r, NULL);
 
@@ -63,7 +57,18 @@ static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i, return_status *st)
 		i->owner.spc_sz = 0;
 		i->owner.malloced = 0;
 	}
-	i->code = parser_free_in_use(&i->p, st);
+	parser_free_in_use(&i->p);
+}
+
+static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i, return_status *st)
+{
+	if (i->p.cur) {
+		assert(i->p.cur == i->p.end);
+		i->p.cur = NULL;
+		i->p.cur_piece->start = NULL;
+		return i;
+	}
+	zonefile_iter_free_in_use(i);
 	return NULL;
 }
 

@@ -78,4 +78,6 @@ zonefile_iter *zonefile_iter_next_(zonefile_iter *i, return_status *st);
 static inline zonefile_iter *zonefile_iter_next(zonefile_iter *i)
 { return zonefile_iter_next_(i, NULL); }
 
+void zonefile_iter_free_in_use(zonefile_iter *i);
+
 #endif /* #ifndef PRESENTATION_H_ */

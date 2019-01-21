@@ -31,4 +31,3 @@ read-zone.o: read-zone.c \
 		presentation.c presentation.h \
 		dnsextlang.c dnsextlang.h \
 		return_status.h parser.h
-dnsextlang.o: ldh_radix.h
