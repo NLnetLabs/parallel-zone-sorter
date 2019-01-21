@@ -126,9 +126,9 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 		return p_zfi_get_piece(i, st);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		i->p.cur += 1;
 		if ((i->code = equip_cur_piece(&i->p, st)))
 			return NULL;
+		i->p.cur += 1;
 		while (i->p.cur < i->p.end)
 			switch (*i->p.cur) {
 			case '\n':
@@ -140,6 +140,7 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 				return p_zfi_get_closing_piece(i, st);
 			case '"':
 				/* Closing quote found, get next piece */
+				i->p.cur += 1;
 				if ((i->code = increment_cur_piece(&i->p, st)))
 					return NULL;
 				return p_zfi_get_closing_piece(i, st);
@@ -230,9 +231,9 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 		return p_zfi_get_closing_piece(i, st);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		i->p.cur += 1;
 		if ((i->code = equip_cur_piece(&i->p, st)))
 			return NULL;
+		i->p.cur += 1;
 		while (i->p.cur < i->p.end)
 			switch (*i->p.cur) {
 			case '\n':
@@ -245,6 +246,7 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 
 			case '"':
 				/* Closing quote found, get next piece */
+				i->p.cur += 1;
 				if ((i->code = increment_cur_piece(&i->p, st)))
 					return NULL;
 				return p_zfi_get_piece(i, st);

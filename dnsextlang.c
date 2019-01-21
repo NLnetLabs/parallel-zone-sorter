@@ -43,23 +43,276 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+status_code uint8_table_add(
+    uint8_table **tabler, uint8_t value, const void *ptr, return_status *st)
+{
+	if (!tabler)
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to uint8_table to register value");
+
+	if (!*tabler && !(*tabler = calloc(256, sizeof(uint8_table))))
+		return RETURN_MEM_ERR(st, "allocating uint8_table");
+
+	if ((*tabler)[value])
+		return RETURN_DATA_ERR(st, "data already exists at value");
+
+	(*tabler)[value] = ptr;
+	return STATUS_OK;
+}
+
+static inline void uint8_table_walk_(
+    size_t depth, uint64_t n, uint8_table *table,
+    uint_table_walk_func leaf, uint_table_walk_func branch, void *userarg)
+{
+	if (!table) return;
+	if (leaf) {
+		size_t i;
+		for (i = 0; i < 255; i++)
+			if (table[i])
+				leaf( depth + 1, (n << 8) | i
+				    , table[i], userarg);
+	}
+	if (branch)
+		branch(depth, n, table, userarg);
+}
+
+void uint8_table_walk(uint8_table *table,
+    uint_table_walk_func leaf, uint_table_walk_func branch, void *userarg)
+{ uint8_table_walk_(0, 0, table, leaf, branch, userarg); }
+
+#define DEF_UINT_TABLE_IMPL(HI,LO,UINT_T,MASK) \
+	status_code uint ## HI ## _table_add( \
+	    uint ## HI ## _table **table_r, UINT_T value, \
+	    const void *ptr, return_status *st) \
+	{ \
+		if (!table_r) \
+			return RETURN_USAGE_ERR(st, "missing reference to " \
+			    "uint" #HI "_table to register value"); \
+		if (!*table_r \
+		&& !(*table_r = calloc(256, sizeof(uint ## HI ## _table)))) \
+			return RETURN_MEM_ERR(st, \
+			    "allocating uint_" #HI "table"); \
+		return uint ## LO ## _table_add( \
+		    &(*table_r)[(value >> LO) & 0xFF], value & MASK, ptr, st); \
+	} \
+	static inline void uint ## HI ## _table_walk_( \
+	    size_t depth, uint64_t n,  uint ## HI ## _table *table, \
+	    uint_table_walk_func leaf, uint_table_walk_func branch, \
+	    void *userarg) \
+	{ \
+		size_t i; \
+		if (!table) return; \
+		for (i = 0; i < 255; i++) \
+			if (table[i]) \
+				uint ## LO ## _table_walk_( \
+				    depth + 1, (n << 8) | i, \
+				    table[i], leaf, branch, \
+				    userarg); \
+		if (branch) \
+			branch(depth, n, table, userarg); \
+	} \
+	void uint ## HI ## _table_walk( \
+	    uint ## HI ## _table *table, uint_table_walk_func leaf, \
+	   uint_table_walk_func branch, void *userarg) \
+	{ uint ## HI ## _table_walk_(0, 0, table, leaf, branch, userarg); }
+
+DEF_UINT_TABLE_IMPL(16,  8, uint16_t, 0xFF)
+DEF_UINT_TABLE_IMPL(24, 16, uint32_t, 0xFFFFUL)
+DEF_UINT_TABLE_IMPL(32, 24, uint32_t, 0xFFFFFFUL)
+
+/* Not needed, but...
+ * DEF_UINT_TABLE_IMPL(40, 32, uint64_t, 0xFFFFFFFFULL)
+ * DEF_UINT_TABLE_IMPL(48, 40, uint64_t, 0xFFFFFFFFFFULL)
+ * DEF_UINT_TABLE_IMPL(56, 48, uint64_t, 0xFFFFFFFFFFFFULL)
+ * DEF_UINT_TABLE_IMPL(64, 56, uint64_t, 0xFFFFFFFFFFFFFFULL)
+ */
+
+static inline void ldh_radix_strncasecpy(char *dst, const char *src, size_t n)
+{ while (n--) *dst++ = toupper(*src++); }
+
+status_code ldh_radix_insert(ldh_radix **r,
+    const char *str, size_t len, uint32_t value, return_status *st)
+{
+	char *n_label;
+	const char *r_label;
+	size_t r_len, n_len;
+	ldh_radix *n;
+
+	if (!r)
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to ldh_radix to register value");
+
+	if (!*r) {
+		if (!(*r = calloc(1, sizeof(ldh_radix) + len + 1)))
+			return RETURN_MEM_ERR(st, "allocating ldh_radix");
+		n_label = (void *)&(*r)->edges[LDH_RADIX_N_EDGES];
+		(*r)->label = n_label;
+		(*r)->len = len;
+		ldh_radix_strncasecpy(n_label, str, len);
+		n_label[len] = 0;
+		(*r)->has_value = 1;
+		(*r)->value = value;
+		return STATUS_OK;
+	}
+	for (r_label = (*r)->label, r_len = (*r)->len
+	    ; len; str++, len--, r_label++, r_len--) {
+		if (!r_len)
+			return ldh_radix_insert(
+			    &(*r)->edges[(toupper(*str) - '-')
+			                % LDH_RADIX_N_EDGES],
+			    str, len, value, st);
+
+		if (toupper(*str) != *r_label)
+			break;
+	};
+	if (!len && !r_len) {
+		(*r)->has_value = 1;
+		(*r)->value = value;
+		return STATUS_OK;
+	}
+
+	n_len = (*r)->len - r_len;
+	if (!(n = calloc(1, sizeof(ldh_radix) + n_len + 1)))
+		return RETURN_MEM_ERR(st, "allocating ldh_radix");
+	n_label = (void *)&n->edges[LDH_RADIX_N_EDGES];
+	n->label = n_label;
+	n->len = n_len;
+	ldh_radix_strncasecpy(n_label, (*r)->label, n_len);
+	n_label[n_len] = 0;
+	
+	(*r)->label = r_label;
+	(*r)->len = r_len;
+	n->edges[(toupper(*r_label) - '-') % LDH_RADIX_N_EDGES] = *r;
+	*r = n;
+
+	if (len)
+		return ldh_radix_insert(
+		    &(*r)->edges[(toupper(*str) - '-') % LDH_RADIX_N_EDGES],
+		    str, len, value, st);
+
+	n->has_value = 1;
+	n->value = value;
+	return STATUS_OK;
+}
+
+status_code ldh_radix_walk(char *buf, size_t bufsz, ldh_radix *r,
+    ldh_radix_walk_func func, void *userarg, return_status *st)
+{
+	size_t i, l = 0;
+	char *mybuf;
+	status_code c;
+
+	if (!r)
+		return RETURN_USAGE_ERR(st, "no ldh_radix to walk");
+
+	if (buf && !bufsz)
+		return RETURN_USAGE_ERR(st, "buffer without size");
+
+	if ((mybuf = buf)) {
+		l = strlen(buf);
+		if (l + r->len >= bufsz) {
+			while (l + r->len >= bufsz)
+				bufsz *= 2;
+			if (mybuf != buf)
+				free(mybuf);
+			if (!(mybuf = calloc(1, bufsz)))
+				RETURN_MEM_ERR(st, "could not grow buffer");
+			(void) memcpy(mybuf, buf, l);
+			mybuf[l] = 0;
+		}
+		(void) memcpy(mybuf + l, r->label, r->len);
+		mybuf[l + r->len] = 0;
+	}
+	for (i = 0; i < LDH_RADIX_N_EDGES; i++) {
+		if (!r->edges[i])
+			continue;
+		c = ldh_radix_walk(
+		    mybuf, bufsz, r->edges[i], func, userarg, st);
+		if (mybuf)
+			mybuf[l + r->len] = 0;
+		if (c) {
+			if (mybuf != buf)
+				free(mybuf);
+			return c;
+		}
+	}
+	c = func(mybuf, r, userarg, st);
+	if (mybuf) {
+		if (mybuf != buf)
+			free(mybuf);
+		buf[l] = 0;
+	}
+	return c;
+}
+
+static void p_del_free_str(
+    size_t depth, uint64_t number, const void *ptr, void *userarg)
+{
+	(void) depth; (void) number; (void) userarg;
+	free((char *)ptr);
+}
+
+static void p_del_free_branch(
+    size_t depth, uint64_t number, const void *ptr, void *userarg)
+{
+	(void) depth; (void) number; (void) userarg;
+	free((void *)ptr);
+}
+
+static status_code p_del_free_ldh_radix(
+    char *str, ldh_radix *r, void *userarg, return_status *st)
+{
+	(void) str; (void) userarg; (void) st;
+	free(r); return STATUS_OK;
+}
+
 static inline void p_del_stanza_free(dnsextlang_stanza *s)
 {
-	if (s) {
-		if (s->name)
-			free((char *)s->name);
-		if (s->description)
-			free((char *)s->description);
-		free(s);
+	size_t i;
+
+	if (!s)
+		return;
+	if (s->name)
+		free((char *)s->name);
+	if (s->description)
+		free((char *)s->description);
+	for (i = 0; i < s->n_fields; i++) {
+		dnsextlang_field *f = &s->fields[i];
+
+		if (f->tag)
+			free((char *)f->tag);
+		if (f->description)
+			free((char *)f->description);
+		if (!f->symbols_by_ldh)
+			continue;
+		switch (f->ftype) {
+		case del_ftype_I1:
+			uint8_table_walk(f->symbols_by_int.I1,
+			    p_del_free_str, p_del_free_branch, NULL);
+			break;
+		case del_ftype_I2:
+			uint16_table_walk(f->symbols_by_int.I2,
+			    p_del_free_str, p_del_free_branch, NULL);
+			break;
+		case del_ftype_I4:
+			uint32_table_walk(f->symbols_by_int.I4,
+			    p_del_free_str, p_del_free_branch, NULL);
+			break;
+		default:
+			assert(f->ftype == del_ftype_I1
+			    || f->ftype == del_ftype_I2
+			    || f->ftype == del_ftype_I4);
+		}
+		(void) ldh_radix_walk(NULL, 0, f->symbols_by_ldh,
+		    p_del_free_ldh_radix, NULL, NULL);
 	}
+	free(s);
 }
 
 static inline status_code p_del_def_add_stanza(
     dnsextlang_def *d, dnsextlang_stanza *s, return_status *st)
 {
-	dnsextlang_rrradix **rrr_p;
-	const char *name;
-	dnsextlang_stanza *es; /* Existing stanza with same name or number */
+	status_code c;
 
 	if (!d)
 		return RETURN_INTERNAL_ERR(st,
@@ -71,74 +324,28 @@ static inline status_code p_del_def_add_stanza(
 		return RETURN_INTERNAL_ERR(st,
 		    "dnsextlang_stanza had no name");
 
-	if (!d->stanzas_hi[s->number >> 8]) {
-		if (!(d->stanzas_hi[s->number >> 8]
-		    = calloc(256, sizeof(dnsextlang_stanza *))))
-			return RETURN_MEM_ERR(st,
-			    "allocating hi byte stanza array");
+	if (dnsextlang_lookup_(d, s->name, strlen(s->name), NULL))
+		return RETURN_DATA_ERR(st,
+		    "stanza with name already exsist");
 
-	} else if ((es = d->stanzas_hi[s->number >> 8][s->number & 0x00FF])) {
-		if (s == es)
-			/* This stanza was already registered in d */
-			return STATUS_OK;
-		rrr_p = &d->rrradix;
-		if (!(name = es->name))
-			return RETURN_DATA_ERR(st,
-			    "existing stanza had no name");
-		while (*name && *rrr_p) {
-			rrr_p = &(*rrr_p)->next_char
-			                   [(toupper(*name) - '-') & 0x2F];
-			name++;
-		}
-		if (!*rrr_p)
-			return RETURN_DATA_ERR(st,
-			    "existing stanza not found in rrradix");
-		if ((*rrr_p)->has_rrtype != 1)
-			return RETURN_DATA_ERR(st,
-			    "existing stanza not registered in rrradix");
-		if ((*rrr_p)->rrtype != s->number)
-			return RETURN_DATA_ERR(st,
-			    "existing stanza had number inconsistency");
-		(*rrr_p)->has_rrtype = 0;
-		(*rrr_p)->rrtype = 0;
-		p_del_stanza_free(es);
-	}
-	d->stanzas_hi[s->number >> 8][s->number & 0x00FF] = s;
-	
-	rrr_p = &d->rrradix;
-	name = s->name;
-	for (;;) {
-		if (!*rrr_p
-		&& !(*rrr_p = calloc(1, sizeof(dnsextlang_rrradix))))
-			return RETURN_MEM_ERR(st,
-			    "allocating dnsextlang_rrradix");
-		if (!*name)
-			break;
-		rrr_p = &(*rrr_p)->next_char[(toupper(*name) - '-') & 0x2F];
-		name++;
-	}
-	if ((*rrr_p)->has_rrtype && (*rrr_p)->rrtype != s->number) {
-		uint8_t to_rm_hi = (*rrr_p)->rrtype >> 8;
-		uint8_t to_rm_lo = (*rrr_p)->rrtype & 0x00FF;
+	if (dnsextlang_get_stanza_(d, s->number))
+		return RETURN_DATA_ERR(st,
+		    "stanza with number already exsist");
 
-		if (d->stanzas_hi[to_rm_hi]
-		 && (es = d->stanzas_hi[to_rm_hi][to_rm_lo])) {
-			p_del_stanza_free(es);
-			d->stanzas_hi[to_rm_hi][to_rm_lo] = NULL;
-		}
-	}
-	(*rrr_p)->has_rrtype = 1;
-	(*rrr_p)->rrtype = s->number;
-	return STATUS_OK;
+	if ((c = uint16_table_add(&d->stanzas_by_u16, s->number, s, st)))
+		return c;
+
+	return ldh_radix_insert(
+	    &d->stanzas_by_ldh, s->name, strlen(s->name), s->number, st);
 }
 
 /* Caller should produce MEM_ERR */
-static inline const char *p_del_strdup(const char *start, const char *end)
+static inline char *p_del_strdup(const char *start, const char *end)
 {
 	char *str;
 
 	if (!start || !end)
-		return (const char *)calloc(1, 1);
+		return (char *)calloc(1, 1);
 
 	assert(end > start);
 	if (!(str = (char *)malloc(end - start + 1)))
@@ -272,7 +479,6 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 
 		e = s;
 		if (!isalpha(*e)) {
-			fprintf(stderr, "character: \'%c\', %d, %d\n", *e, isspace(*e), e < p->end);
 			return RETURN_PARSE_ERR(st,
 			    "qualifiers must start with an alpha character",
 			    p->fn, p->line_nr, p->col_nr + (e - p->start));
@@ -283,36 +489,41 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 			char numbuf[30] = "", *endptr;
 			long long int ll;
 			status_code c;
-			const char *symbol;
+			char *symbol;
 
 			eq = e;
 			if (++e >= p->end || !isdigit(*e))
 				return RETURN_PARSE_ERR(st,
 				    "missing number after equal sign",
 				    p->fn, p->line_nr,
-				    p->col_nr + (p->start - e));
+				    p->col_nr + (e - p->start));
 			while (e < p->end && isdigit(*e))
 				e++;
 			assert(e > (eq + 1));
 			(void) memcpy(numbuf, eq + 1, e - (eq + 1));
 			numbuf[e - (eq + 1)] = 0;
 			ll = strtoll(numbuf, &endptr, 10);
-			fprintf(stderr, "   symbol: %.*s=%lli\n"
-			       , (int)(eq - s), s, ll );
 			if (!(symbol = p_del_strdup(s, eq)))
 				return RETURN_MEM_ERR(st,
 				    "could not duplicate symbolic field value");
 
 			switch (f->ftype) {
 			case del_ftype_I1:
-				if (ll > 255)
+				if (ll > 255) {
+					free(symbol);
 					return RETURN_PARSE_ERR(st,
 					    "I1 field value must be < 256",
 					    p->fn, p->line_nr,
-					    p->col_nr + (p->start - s));
-				if ((c = ldh_uint8_register(
-				    &f->symbols.I1, s, eq - s, ll, symbol, st)))
-					return c;
+					    p->col_nr + (eq + 1 - p->start));
+				}
+				if ((c = uint8_table_add(
+				    &f->symbols_by_int.I1, ll, symbol, st))) {
+					free(symbol);
+					return RETURN_PARSE_ERR(st,
+					    "could not add value",
+					    p->fn, p->line_nr,
+					    p->col_nr + (eq + 1 - p->start));
+				}
 				break;
 
 			case del_ftype_I2:
@@ -320,10 +531,15 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 					return RETURN_PARSE_ERR(st,
 					    "I2 field value must be < 65536",
 					    p->fn, p->line_nr,
-					    p->col_nr + (p->start - s));
-				if ((c = ldh_uint16_register(
-				    &f->symbols.I2, s, eq - s, ll, symbol, st)))
-					return c;
+					    p->col_nr + (eq + 1 - p->start));
+				if ((c = uint16_table_add(
+				    &f->symbols_by_int.I2, ll, symbol, st))) {
+					free(symbol);
+					return RETURN_PARSE_ERR(st,
+					    "could not add value",
+					    p->fn, p->line_nr,
+					    p->col_nr + (eq + 1 - p->start));
+				}
 				break;
 
 			case del_ftype_I4:
@@ -331,18 +547,33 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 					return RETURN_PARSE_ERR(st,
 					    "I4 field value must be "
 					    "< 4294967296", p->fn, p->line_nr,
-					    p->col_nr + (p->start - s));
-				if ((c = ldh_uint32_register(
-				    &f->symbols.I4, s, eq - s, ll, symbol, st)))
-					return c;
+					    p->col_nr + (eq + 1 - p->start));
+				if ((c = uint32_table_add(
+				    &f->symbols_by_int.I4, ll, symbol, st))) {
+					free(symbol);
+					return RETURN_PARSE_ERR(st,
+					    "could not add value",
+					    p->fn, p->line_nr,
+					    p->col_nr + (eq + 1 - p->start));
+				}
 				break;
 			default:
+				free(symbol);
 				return RETURN_PARSE_ERR(st,
 				    "symbolic values allowed with "
 				    "integer fields only",
 				    p->fn, p->line_nr,
-				    p->col_nr + (p->start - s));
+				    p->col_nr + (s - p->start));
 			}
+			if ((c = ldh_radix_insert(
+			    &f->symbols_by_ldh, s, eq - s, ll, st))) {
+				free(symbol);
+				return RETURN_PARSE_ERR(st,
+				    "could not add symbol",
+				    p->fn, p->line_nr,
+				    p->col_nr + (s - p->start));
+			}
+
 		} else {
 			int q = p_lookup_qual(s, e);
 
@@ -350,7 +581,7 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 				return RETURN_PARSE_ERR(st,
 				    "unknown qualifier",
 				    p->fn, p->line_nr,
-				    p->col_nr + (p->start - s));
+				    p->col_nr + (s - p->start));
 			f->quals |= q;
 		}
 
@@ -449,7 +680,7 @@ dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(
 	if (e < piece->end && *e == ':') {
 		for (s = ++e; e < piece->end; e++)
 			if (isalpha(*e))
-				r->options[toupper(*e) - 'A'] = 1;
+				r->options |= (1 << (toupper(*e) - 'A'));
 			else
 				break;
 	}
@@ -706,154 +937,23 @@ dnsextlang_def *dnsextlang_def_new_from_fn_(
 	return parser_init_fn(&p, fn, st) ? NULL : p_dfi2def(cfg, &p, st);
 }
 
-static void p_rrradix_free(dnsextlang_rrradix *rrr)
+static void p_del_free_stanza(
+    size_t depth, uint64_t number, const void *ptr, void *userarg)
 {
-	size_t i;
-
-	if (!rrr) return;
-	for (i = 0; i < 48; i++)
-		if (rrr->next_char[i])
-			p_rrradix_free(rrr->next_char[i]);
-	free(rrr);
+	(void) depth; (void) number; (void) userarg;
+	p_del_stanza_free((dnsextlang_stanza *)ptr);
 }
 
 void dnsextlang_def_free(dnsextlang_def *d)
 {
-	size_t i, j;
-
-	if (!d) return;
-	for (i = 0; i < 256; i++) {
-		if (d->stanzas_hi[i]) {
-			for (j = 0; j < 256; j++)
-				p_del_stanza_free(d->stanzas_hi[i][j]);
-			free(d->stanzas_hi[i]);
-		}
-	}
-	p_rrradix_free(d->rrradix);
+	/* TODO: implement */
+	if (!d)
+		return;
+	uint16_table_walk(d->stanzas_by_u16,
+	    p_del_free_stanza, p_del_free_branch, NULL);
+	(void) ldh_radix_walk(
+	    NULL, 0, d->stanzas_by_ldh, p_del_free_ldh_radix, NULL, NULL);
 	free(d);
 }
 
-static void p_export_stanza2c(size_t n, dnsextlang_stanza *s)
-{
-	size_t i;
-	static const char *ftype_str[] = {
-	    "del_ftype_I1", "del_ftype_I2", "del_ftype_I4",
-	    "del_ftype_A" , "del_ftype_AA", "del_ftype_AAAA",
-	                 "del_ftype_EUI48", "del_ftype_EUI64",
-	    "del_ftype_T" , "del_ftype_T6", "del_ftype_R",
-	    "del_ftype_N" , "del_ftype_S" , "del_ftype_B32", "del_ftype_B64",
-	    "del_ftype_X" , "del_ftype_Z" };
-	static const char *qual_str[] = {
-	    "del_qual_C", "del_qual_A", "del_qual_L", "del_qual_O",
-	    "del_qual_M", "del_qual_X", "del_qual_P",
-	    "del_qual_WKS", "del_qual_NSAP", "del_qual_NXT",
-	    "del_qual_A6P", "del_qual_A6S", "del_qual_APL",
-	    "del_qual_IPSECKEY", "del_qual_HIPHIT", "del_qual_HIPPK" };
-
-	if (s->n_fields) {
-		printf("static dnsextlang_field t_%.4zx_fields[%zu] = {\n"
-		      , n, s->n_fields);
-		for (i = 0; i < s->n_fields; i++) {
-			dnsextlang_field *f = &s->fields[i];
-			size_t j;
-
-			printf("\t{ .ftype = ");
-			if (f->ftype >= 0 && f->ftype <= del_ftype_Z)
-				printf("%s", ftype_str[f->ftype]);
-			else
-				printf("%d", f->ftype);
-			if (f->quals) {
-				dnsextlang_qual q = f->quals;
-				int qs = 0;
-
-				printf(", .quals = (");
-				for ( j = 0
-				    ; j < sizeof(qual_str) / sizeof(const char *)
-				    ; j++ ) {
-					if (q & (1 << j)) {
-						if (qs) putchar('|');
-						qs = 1;
-						printf("%s", qual_str[j]);
-					}
-					q &= ~(1 << j);
-				}
-				if (q)
-					printf("|%x", q);
-				printf(")");
-			}
-			if (f->tag)
-				printf(", .tag = \"%s\"", f->tag);
-			if (f->description)
-				printf("\n\t, .description = \"%s\"", f->description);
-
-			printf(" }");
-			if (i + 1 < s->n_fields)
-				printf(",\n");
-			else
-				printf("\n");
-		}
-		printf("};\n");
-	}
-	printf("static dnsextlang_stanza t_%.4zx = "
-	       "{\n\t.name = \"%s\", .number = %zu,\n\t"
-	      , n, s->name, (size_t)s->number);
-	if (s->description)
-		printf(".description = \"%s\",\n\t", s->description);
-	printf(".options = {");
-	for (i = 0; i < 26; i++) {
-		putchar(s->options[i] ? '1' : '0');
-		if (i < 25)
-			putchar(',');
-	}
-	printf("},\n\t");
-	if (s->n_fields)
-		printf(".n_fields = %zu, .fields = t_%.4zx_fields"
-		      , s->n_fields, n);
-	printf("\n};\n");
-}
-
-static void p_export_hi2c(size_t hi, dnsextlang_stanza **stanzas_lo)
-{
-	char buf[4096];
-	size_t i;
-
-	sprintf(buf, "static dnsextlang_stanza *t_hi%.2zx[256] = {\n\t", hi);
-	for (i = 0; i < 256; i++) {
-		if (!stanzas_lo[i])
-			(void) strcat(buf, " NULL  ");
-		else {
-			sprintf(buf + strlen(buf), "&t_%.2zx%.2zx", hi, i);
-			p_export_stanza2c(((hi << 8) | i), stanzas_lo[i]);
-		}
-		if (i < 255) {
-			(void) strcat(buf, ",");
-			(void) strcat(buf, (i + 1) % 8 == 0 ? "\n\t" : "");
-		}
-	}
-	printf("%s\n};\n", buf);
-}
-
-void dnsextlang_export_def2c(dnsextlang_def *d)
-{
-	char buf[4096] = "static dnsextlang_def p_dns_default_rrtypes = {\n";
-	size_t i;
-
-	printf("#include \"dnsextlang.h\"\n");
-	(void) strcat(buf, "\t{ ");
-	for (i = 0; i < 256; i++) {
-		if (!d->stanzas_hi[i])
-			(void) strcat(buf, "NULL  ");
-		else {
-			sprintf(buf + strlen(buf), "t_hi%.2zx", i);
-			p_export_hi2c(i, d->stanzas_hi[i]);
-		}
-		if (i < 255) {
-			(void) strcat(buf, ",");
-			(void) strcat(buf, (i + 1) % 8 == 0 ? "\n\t  " : " ");
-		}
-	}
-	(void) strcat(buf, "},\n");
-
-	printf("%s\tNULL, NULL\n};\n", buf);
-	printf("dnsextlang_def *dns_default_rrtypes = &p_dns_default_rrtypes;");
-}
+// dnsextlang_def *dns_default_rrtypes = NULL;

@@ -34,11 +34,11 @@
 #define DNSEXTLANG_H_
 #include "return_status.h"
 #include "dns_config.h"
-#include "ldh_radix.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef NO_DNS_DEFAULT_RRTYPES
 #ifdef  DNS_DEFAULT_RRTYPES
 #undef  DNS_DEFAULT_RRTYPES
 #endif
@@ -49,6 +49,92 @@
 #define DNS_CONFIG_DEFAULTS { DNS_DEFAULT_TTL   , DNS_DEFAULT_CLASS   \
                             , DNS_DEFAULT_ORIGIN, DNS_DEFAULT_RRTYPES }
 #endif
+#endif
+
+
+typedef const void * uint8_table;
+
+static inline const void *uint8_table_lookup(uint8_table *table, uint8_t value)
+{ return !table ? NULL : table[value]; }
+
+status_code uint8_table_add(
+    uint8_table **tabler, uint8_t value, const void *ptr, return_status *st);
+
+typedef void (*uint_table_walk_func)(
+    size_t depth, uint64_t number, const void *ptr, void *userarg);
+
+void uint8_table_walk(uint8_table *table,
+    uint_table_walk_func leaf, uint_table_walk_func branch, void *userarg);
+
+
+#define DEF_UINT_TABLE_DECL(HI,LO,UINT_T,MASK) \
+	typedef uint ## LO ## _table *uint ## HI ##_table; \
+	\
+	static inline const void *uint ## HI ## _table_lookup( \
+	    uint ## HI ## _table *table, UINT_T value) \
+	{ return !table ? NULL : uint ## LO ## _table_lookup(\
+	    table[(value >> LO) & 0xFF], value & MASK); } \
+	\
+	status_code uint ## HI ## _table_add( \
+	    uint ## HI ## _table **table_r, UINT_T value, \
+	    const void *ptr, return_status *st); \
+	\
+	void uint ## HI ## _table_walk(uint ## HI ## _table *table, \
+	    uint_table_walk_func leaf, uint_table_walk_func branch, \
+	    void *userarg);
+
+DEF_UINT_TABLE_DECL(16,  8, uint16_t, 0xFF)
+DEF_UINT_TABLE_DECL(24, 16, uint32_t, 0xFFFFUL)
+DEF_UINT_TABLE_DECL(32, 24, uint32_t, 0xFFFFFFUL)
+
+/* Not needed, but...
+ * DEF_UINT_TABLE_DECL(40, 32, uint64_t, 0xFFFFFFFFULL)
+ * DEF_UINT_TABLE_DECL(48, 40, uint64_t, 0xFFFFFFFFFFULL)
+ * DEF_UINT_TABLE_DECL(56, 48, uint64_t, 0xFFFFFFFFFFFFULL)
+ * DEF_UINT_TABLE_DECL(64, 56, uint64_t, 0xFFFFFFFFFFFFFFULL)
+ */
+
+typedef union uint_table {
+	uint8_table  *I1;
+	uint16_table *I2;
+	uint32_table *I4;
+} uint_table;
+
+#define LDH_RADIX_N_EDGES 46
+
+typedef struct ldh_radix ldh_radix;
+struct ldh_radix {
+	const char     *label;
+	uint16_t        len;
+	uint8_t         has_value;
+	uint32_t        value;
+	ldh_radix *edges[LDH_RADIX_N_EDGES];
+};
+
+static inline uint32_t *ldh_radix_lookup(
+    ldh_radix *r, const char *str, size_t len)
+{
+	for (;;) {
+		if (!r || len < r->len
+		||  (r->len && strncasecmp(r->label, str, r->len)))
+			return NULL;
+		str += r->len;
+		len -= r->len;
+		if (!len)
+			return r->has_value ? &r->value : NULL;
+		r = r->edges[(toupper(*str) - '-') % LDH_RADIX_N_EDGES];
+	}
+}
+
+status_code ldh_radix_insert(ldh_radix **r,
+    const char *str, size_t len, uint32_t value, return_status *st);
+
+typedef status_code (*ldh_radix_walk_func)(char *str, ldh_radix *r,
+    void *userarg, return_status *st);
+
+status_code ldh_radix_walk(char *buf, size_t bufsz, ldh_radix *r,
+    ldh_radix_walk_func func, void *userarg, return_status *st);
+
 
 struct dnsextlang_def;
 extern struct dnsextlang_def *dns_default_rrtypes;
@@ -112,15 +198,23 @@ static inline uint8_t dnsextlang_wf_field_len(
 	}
 }
 
-typedef struct dnsextlang_symbol {
-	const char        *name;
-	uint32_t           number;
-} dnsextlang_symbol;
+typedef enum dnsextlang_option {
+	del_option_A = 1 <<  0, del_option_B = 1 <<  1, del_option_C = 1 <<  2,
+	del_option_D = 1 <<  3, del_option_E = 1 <<  4, del_option_F = 1 <<  5,
+	del_option_G = 1 <<  6, del_option_H = 1 <<  7, del_option_I = 1 <<  8,
+	del_option_J = 1 <<  9, del_option_K = 1 << 10, del_option_L = 1 << 11,
+	del_option_M = 1 << 12, del_option_N = 1 << 13, del_option_O = 1 << 14,
+	del_option_P = 1 << 15, del_option_Q = 1 << 16, del_option_R = 1 << 17,
+	del_option_S = 1 << 18, del_option_T = 1 << 19, del_option_U = 1 << 20,
+	del_option_V = 1 << 21, del_option_W = 1 << 22, del_option_X = 1 << 23,
+	del_option_Y = 1 << 24, del_option_Z = 1 << 25
+} dnsextlang_option;
 
 typedef struct dnsextlang_field {
 	dnsextlang_ftype   ftype;
 	dnsextlang_qual    quals;
-	ldh_map            symbols;
+	uint_table         symbols_by_int;
+	ldh_radix         *symbols_by_ldh;
 	const char        *tag;
 	const char        *description;
 } dnsextlang_field;
@@ -128,68 +222,50 @@ typedef struct dnsextlang_field {
 typedef struct dnsextlang_stanza {
 	const char        *name;
 	uint16_t           number;
-	uint8_t            options[26];
+	dnsextlang_option  options;
 	const char        *description;
 	size_t           n_fields;
 	dnsextlang_field  *fields;
 } dnsextlang_stanza;
 
-typedef struct dnsextlang_rrradix dnsextlang_rrradix;
-struct dnsextlang_rrradix {
-	dnsextlang_rrradix *next_char[48];
-	uint16_t            rrtype;
-	uint8_t         has_rrtype;
-};
-
 typedef struct dnsextlang_def dnsextlang_def;
 struct dnsextlang_def {
-	dnsextlang_stanza  **stanzas_hi[256];
-	dnsextlang_rrradix  *rrradix;
-	dnsextlang_def      *fallback;
+	uint16_table   *stanzas_by_u16;
+	ldh_radix      *stanzas_by_ldh;
+	dnsextlang_def *fallback;
 };
 
 
 static inline dnsextlang_stanza *dnsextlang_get_stanza_(
     dnsextlang_def *def, uint16_t rrtype)
 {
-	dnsextlang_stanza **s;
-
-	if (!def) return dnsextlang_get_stanza_(dns_default_rrtypes, rrtype);
-	s = def->stanzas_hi[rrtype >> 8];
-	return !s ? NULL : s[rrtype & 0x00FF];
+	if (!def)
+		return NULL;
+	return (dnsextlang_stanza *)
+	    uint16_table_lookup(def->stanzas_by_u16, rrtype);
 }
 
 static inline dnsextlang_stanza *dnsextlang_get_stanza(uint16_t rrtype)
-{ return dnsextlang_get_stanza_(NULL, rrtype); }
+{ return dnsextlang_get_stanza_(DNS_DEFAULT_RRTYPES, rrtype); }
 
 
 static inline int dnsextlang_get_type_(dnsextlang_def *def,
     const char *rrtype, size_t rrtype_strlen, return_status *st)
 {
+	uint32_t *r;
+       
 	if (!def)
-		return dnsextlang_get_type_( dns_default_rrtypes
-		                           , rrtype, rrtype_strlen, st);
-	if (!rrtype)
-		return -RETURN_USAGE_ERR(st, "missing rrtype");
+		return -RETURN_USAGE_ERR(st, "missing rrtypes definition");
 
-	if (!rrtype_strlen)
-		rrtype_strlen = strlen(rrtype);
-	do {
-		dnsextlang_rrradix *rrr = def->rrradix;
-		const char *c = rrtype;
-		size_t l = rrtype_strlen;
-
-		for ( l = rrtype_strlen
-		    ; rrr && l
-		    ; rrr = rrr->next_char[(toupper(*c++)-'-') & 0x2F], l--)
-			; /* pass */
-
-		if (rrr && !l && rrr->has_rrtype)
-			return rrr->rrtype;
-
-		def = def->fallback;
-	} while (def);
-
+	if (def) {
+		if ((r = ldh_radix_lookup(
+		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
+			return *r;
+		
+		if (def->fallback)
+			return dnsextlang_get_type_(
+			    def->fallback, rrtype, rrtype_strlen, st);
+	}
 	if (rrtype_strlen > 4
 	&& (rrtype[0] == 'T' || rrtype[0] == 't')
 	&& (rrtype[1] == 'Y' || rrtype[1] == 'y')
@@ -210,6 +286,7 @@ static inline int dnsextlang_get_type_(dnsextlang_def *def,
 		if (*endptr)
 			return -RETURN_PARSE_ERR(st,
 			    "syntax error in rrtype TYPE number", NULL, 0, 0);
+
 		if (n > 65535)
 			return -RETURN_PARSE_ERR(st,
 			    "rrtype TYPE number must be < 65536", NULL, 0, 0);
@@ -219,7 +296,8 @@ static inline int dnsextlang_get_type_(dnsextlang_def *def,
 }
 
 static inline int dnsextlang_get_type(const char *rrtype)
-{ return dnsextlang_get_type_(NULL, rrtype, 0, NULL); }
+{ return dnsextlang_get_type_(DNS_DEFAULT_RRTYPES,
+      rrtype, ( rrtype ? strlen(rrtype) : 0 ), NULL); }
 
 
 static inline dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
@@ -228,7 +306,8 @@ static inline dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
 ; return rrtype_int >= 0 ? dnsextlang_get_stanza_(def, rrtype_int) : NULL; }
 
 static inline dnsextlang_stanza *dnsextlang_lookup(const char *rrtype)
-{ return dnsextlang_lookup_(NULL, rrtype, 0, NULL); }
+{ return dnsextlang_lookup_(
+    NULL, rrtype, ( rrtype ? strlen(rrtype) : 0 ), NULL); }
 
 dnsextlang_def *dnsextlang_def_new_from_text_(
     dns_config *cfg, const char *text, size_t text_len, return_status *st);
@@ -245,7 +324,5 @@ inline static dnsextlang_def *dnsextlang_def_new_from_fn(const char *fn)
 { return dnsextlang_def_new_from_fn_(NULL, fn, NULL); }
 
 void dnsextlang_def_free(dnsextlang_def *def);
-
-void dnsextlang_export_def2c(dnsextlang_def *def);
 
 #endif /* #ifndef DNSEXTLANG_H_ */

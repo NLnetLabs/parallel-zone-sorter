@@ -140,7 +140,7 @@ KX:36:I Key Exchanger [RFC2230]
    N:exchanger Exchanger
 
 CERT:37:A CERT [RFC4398]
-   I2[PKIX=1,SPKI=2,PGP=2,IPKIX=4,ISPKI=5,IPGP=6,ACPKIX=7,IACPKIX=8,\
+   I2[PKIX=1,SPKI=2,PGP=3,IPKIX=4,ISPKI=5,IPGP=6,ACPKIX=7,IACPKIX=8,\
     URI=253,OID=254]:type Type
    I2:tag Key tag
    I1[RSAMD5=1,DH=2,DSA=3,ECC=4,RSASHA1=5,INDIRECT=252,PRIVATEDNS=253,\
@@ -235,7 +235,7 @@ HIP:55:A Host Identity Protocol [RFC8005]
    I1:pkalg PK algorithm
    Z[HIPHIT]:hit HIT
    Z[HIPPK]:pubkey Public Key
-   N[O]:servers Rendezvous servers
+   N[O,M]:servers Rendezvous servers
 
 CDS:59:A Child DS [RFC7344]
    I2:keytag Key tag

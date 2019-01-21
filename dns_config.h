@@ -45,11 +45,11 @@
 #endif
 #ifndef DNS_DEFAULT_RRTYPES
 struct dnsextlang_def;
-#define DNS_DEFAULT_RRTYPES NULL;
+#define DNS_DEFAULT_RRTYPES NULL
 #endif
 
 #define DNS_CONFIG_DEFAULTS { DNS_DEFAULT_TTL   , DNS_DEFAULT_CLASS \
-                            , DNS_DEFAULT_ORIGIN, DEFAULT_RRTYPES   }
+                            , DNS_DEFAULT_ORIGIN, DNS_DEFAULT_RRTYPES }
 
 typedef struct dns_config {
 	uint32_t               default_ttl;
