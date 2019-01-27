@@ -35,41 +35,6 @@
 #include <stdlib.h>
 #include <assert.h>
 
-void print_status(return_status *stat)
-{
-	assert(stat);
-	switch (stat->code) {
-	case STATUS_OK:
-		fprintf(stderr, "Everything OK\n");
-		break;
-
-	case STATUS_PARSE_ERR:
-		fprintf( stderr
-		       , "parse error: %s in \"%s\" "
-		         "at line %zu col %zu\n\tin function %s at %s:%d\n"
-		       , stat->msg
-		       , stat->details.parse.fn
-		       , stat->details.parse.line_nr + 1
-		       , stat->details.parse.col_nr + 1
-		       , stat->func
-		       , stat->file
-		       , stat->line
-		       );
-		break;
-	default:
-		fprintf( stderr
-		       , "%s error: %s in function %s at %s:%d\n"
-		       , status_code2str(stat->code)
-		       , stat->msg
-		       , stat->func
-		       , stat->file
-		       , stat->line
-		       );
-		break;
-	}
-	return_status_reset(stat);
-}
-
 int main(int argc, char **argv)
 {
 	dns_config      cfg = DNS_CONFIG_DEFAULTS;
@@ -86,18 +51,26 @@ int main(int argc, char **argv)
 
 	for ( zi = zonefile_iter_init_fn_(&cfg, &zi_spc, argv[1], &st)
 	    ; zi ; zi = zonefile_iter_next_(zi, &st)) {
-		dnsextlang_stanza *s;
+#if 1
+		const dnsextlang_stanza *s;
+		if (!(s = dnsextlang_lookup__(zi->rr_type->start,
+		    zi->rr_type->end - zi->rr_type->start, &st))) {
+			fprint_return_status(stderr, &st);
+		}
+#endif
 	       
-		fprintf(stderr, "origin: \"%.*s\", owner: \"%.*s\", type: \"%.*s\", # rdata fields: %d\n",
+#if 0
+		fprintf(stderr,
+		    "origin: \"%.*s\", owner: \"%.*s\", "
+		    "type: \"%.*s\", # rdata fields: %d\n",
 		    (int)zi->origin.len, zi->origin.r.text,
 		    (int)zi->owner.len, zi->owner.r.text,
-		    (int)(zi->rr_type->end - zi->rr_type->start), zi->rr_type->start,
+		    (int)(zi->rr_type->end - zi->rr_type->start),
+		    zi->rr_type->start,
 		    (int)(zi->p.cur_piece - (zi->rr_type + 1))
 		    );
-		if (!(s = dnsextlang_lookup_(cfg.rrtypes, zi->rr_type->start,
-		    zi->rr_type->end - zi->rr_type->start, &st))) {
-			print_status(&st);
-		}
+#endif
+#if 0
 		else if (s->n_fields + 1 != (zi->p.cur_piece - zi->rr_type)) {
 			parse_piece *p;
 
@@ -109,17 +82,19 @@ int main(int argc, char **argv)
 			       , (int)s->number, (int)s->n_fields
 			       , (int)(zi->p.cur_piece - (zi->rr_type + 1)));
 			for (p = zi->rr_type + 1; p < zi->p.cur_piece; p++) {
-				fprintf( stderr, "\t%d: (%3d) \"%.*s\"\n"
+				fprintf( stderr, "\t%d: (%s:%zu:%zu) \"%.*s\"\n"
 				       , (int)(p - zi->rr_type)
-				       , (int)(p->end - p->start)
+				       , p->fn, p->line_nr + 1, p->col_nr + 1
 				       , (int)(p->end - p->start)
 				       , p->start);
 			}
 		}
+#endif
 		rr_count++;
 	}
 	if (st.code) {
-		print_status(&st);
+		fprintf(stderr, "%d\n", (int)st.code);
+		fprint_return_status(stderr, &st);
 		zonefile_iter_free_in_use(&zi_spc);
 
 	}

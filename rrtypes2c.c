@@ -71,6 +71,62 @@ void print_status(return_status *stat)
 	return_status_reset(stat);
 }
 
+#ifdef USE_LDH_TRIE
+static status_code p_print_ldh_trie(
+    char *str, ldh_trie *r, void *userarg, return_status *st)
+{
+	size_t i, l = strlen(str);
+	size_t c;
+	char *prefix = (char *)userarg;
+	size_t pl = strlen(prefix);
+
+	(void)userarg;
+	(void)st;
+
+	if (l)
+	       for (i = 0; i < l; i++)
+		       if (str[i] == '-')
+			       str[i] = '_';
+	str[l + 1] = 0;
+	printf( "static ldh_trie %s%s = {\n\t{"
+	      , prefix, *str ? str : "ldh_trie");
+	c = 9;
+	for (i = 0; i < 46; i++) {
+		ldh_trie *e;
+
+		if (i) {
+			printf(",");
+			c += 1;
+		}
+		if (!(e = r->edges[i])) {
+			if (c + 6 > 76) {
+				printf("\n\t  NULL");
+				c = 8 + 6;
+			} else {
+				printf(" NULL");
+				c += 5;
+			}
+			continue;
+		}
+		str[l] = i ? '-' + i : '_';
+		if (c + pl + l + 1 > 76) {
+			printf("\n\t &%s%s", prefix, str);
+			c = 8 + pl + l + 2;
+		} else {
+			printf("&%s%s", prefix, str);
+			c += pl + l + 1;
+		}
+	}
+	str[l] = 0;
+	if (!r->value)
+		printf(" }, NULL };\n");
+	else
+		printf( " }, &t%.4x };\n"
+		      , ((const dnsextlang_stanza *)r->value)->number);
+	return STATUS_OK;
+}
+#endif
+
 static status_code p_print_ldh_radix(
     char *str, ldh_radix *r, void *userarg, return_status *st)
 {
@@ -111,12 +167,12 @@ static status_code p_print_ldh_radix(
 		for ( d = str + l, s = (char *)e->label; *s; d++, s++)
 			*d = *s == '-' ? '_' : *s;
 		str[l + e->len] = 0;
-		if (c + e->len + pl + 2 > 76) {
+		if (c + l + e->len + pl + 2 > 76) {
 			printf("\n\t &%s%s", prefix, str);
-			c = 8 + e->len + pl + 2;
+			c = 8 + l + e->len + pl + 2;
 		} else {
 			printf("&%s%s", prefix, str);
-			c += e->len + pl + 1;
+			c += l + e->len + pl + 1;
 		}
 		str[l] = 0;
 	}
@@ -410,6 +466,14 @@ static void p_print_table(
 	printf("};\n");
 }
 
+#ifdef  USE_LDH_TRIE
+#define P_PRINT_LDH_CONT p_print_ldh_trie
+#define RR_LDH_CONT      "rr_ldh_trie"
+#else
+#define P_PRINT_LDH_CONT p_print_ldh_radix
+#define RR_LDH_CONT      "rr_ldh_radix"
+#endif
+
 status_code dnsextlang_export_def2c(dnsextlang_def *d, return_status *st)
 {
 	status_code c;
@@ -419,11 +483,11 @@ status_code dnsextlang_export_def2c(dnsextlang_def *d, return_status *st)
 
 	uint16_table_walk(
 	    d->stanzas_by_u16, p_print_stanza, p_print_table, NULL);
-	if ((c = ldh_radix_walk(buf, sizeof(buf),
-	    d->stanzas_by_ldh, p_print_ldh_radix, "rr_", NULL)))
+	if ((c = LDH_WALK(buf, sizeof(buf), d->stanzas_by_ldh,
+	    P_PRINT_LDH_CONT, "rr_", NULL)))
 		return c;
 	printf("static dnsextlang_def p_dns_default_rrtypes = {\n\t");
-	printf("(void *)rrtypes_table, &rr_ldh_radix, NULL };\n");
+	printf("(void *)rrtypes_table, &" RR_LDH_CONT ", NULL };\n");
 	printf("dnsextlang_def *dns_default_rrtypes = "
 	       "&p_dns_default_rrtypes;\n");
 	return STATUS_OK;

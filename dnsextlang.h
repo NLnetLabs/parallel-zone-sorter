@@ -100,15 +100,15 @@ typedef union uint_table {
 	uint32_table *I4;
 } uint_table;
 
-#define LDH_RADIX_N_EDGES 46
+#define LDH_N_EDGES 46
 
 typedef struct ldh_radix ldh_radix;
 struct ldh_radix {
-	const char     *label;
-	uint16_t        len;
-	uint8_t         has_value;
-	uint32_t        value;
-	ldh_radix *edges[LDH_RADIX_N_EDGES];
+	const char *label;
+	uint16_t    len;
+	uint8_t     has_value;
+	uint32_t    value;
+	ldh_radix  *edges[LDH_N_EDGES];
 };
 
 static inline uint32_t *ldh_radix_lookup(
@@ -118,11 +118,11 @@ static inline uint32_t *ldh_radix_lookup(
 		if (!r || len < r->len
 		||  (r->len && strncasecmp(r->label, str, r->len)))
 			return NULL;
-		str += r->len;
 		len -= r->len;
 		if (!len)
 			return r->has_value ? &r->value : NULL;
-		r = r->edges[(toupper(*str) - '-') % LDH_RADIX_N_EDGES];
+		str += r->len;
+		r = r->edges[(toupper(*str) - '-') % LDH_N_EDGES];
 	}
 }
 
@@ -135,6 +135,50 @@ typedef status_code (*ldh_radix_walk_func)(char *str, ldh_radix *r,
 status_code ldh_radix_walk(char *buf, size_t bufsz, ldh_radix *r,
     ldh_radix_walk_func func, void *userarg, return_status *st);
 
+/* ldh_trie is 4% faster than ldh_radix (but wastful with memory) */
+typedef struct ldh_trie ldh_trie;
+struct ldh_trie {
+	ldh_trie   *edges[LDH_N_EDGES];
+	const void *value;
+};
+
+static inline const void *ldh_trie_lookup(
+    ldh_trie *r, const char *str, size_t len)
+{ 
+	if (!r)
+		return NULL;
+
+	else while (len) {
+		if (!(r = r->edges[(toupper(*str)-'-')%LDH_N_EDGES]))
+			return NULL;
+		str++;
+		len--;
+	};
+	return r->value;
+}
+
+status_code ldh_trie_insert(ldh_trie **r,
+    const char *str, size_t len, const void *value, return_status *st);
+
+typedef status_code (*ldh_trie_walk_func)(char *str, ldh_trie *r,
+    void *userarg, return_status *st);
+
+status_code ldh_trie_walk(char *buf, size_t bufsz, ldh_trie *r,
+    ldh_trie_walk_func func, void *userarg, return_status *st);
+
+#ifdef  USE_LDH_TRIE
+#define LDH_CONTAINER ldh_trie
+#define LDH_LOOKUP    ldh_trie_lookup
+#define LDH_INSERT    ldh_trie_insert
+#define LDH_WALK_FUNC ldh_trie_walk_func
+#define LDH_WALK      ldh_trie_walk
+#else
+#define LDH_CONTAINER ldh_radix
+#define LDH_LOOKUP    ldh_radix_lookup
+#define LDH_INSERT    ldh_radix_insert
+#define LDH_WALK_FUNC ldh_radix_walk_func
+#define LDH_WALK      ldh_radix_walk
+#endif
 
 struct dnsextlang_def;
 extern struct dnsextlang_def *dns_default_rrtypes;
@@ -231,12 +275,11 @@ typedef struct dnsextlang_stanza {
 typedef struct dnsextlang_def dnsextlang_def;
 struct dnsextlang_def {
 	uint16_table   *stanzas_by_u16;
-	ldh_radix      *stanzas_by_ldh;
+	LDH_CONTAINER  *stanzas_by_ldh;
 	dnsextlang_def *fallback;
 };
 
-
-static inline dnsextlang_stanza *dnsextlang_get_stanza_(
+static inline const dnsextlang_stanza *dnsextlang_get_stanza_(
     dnsextlang_def *def, uint16_t rrtype)
 {
 	if (!def)
@@ -245,27 +288,13 @@ static inline dnsextlang_stanza *dnsextlang_get_stanza_(
 	    uint16_table_lookup(def->stanzas_by_u16, rrtype);
 }
 
-static inline dnsextlang_stanza *dnsextlang_get_stanza(uint16_t rrtype)
+static inline const dnsextlang_stanza *dnsextlang_get_stanza(uint16_t rrtype)
 { return dnsextlang_get_stanza_(DNS_DEFAULT_RRTYPES, rrtype); }
 
 
-static inline int dnsextlang_get_type_(dnsextlang_def *def,
+static inline int dnsextlang_get_TYPE_rrtype(
     const char *rrtype, size_t rrtype_strlen, return_status *st)
 {
-	uint32_t *r;
-       
-	if (!def)
-		return -RETURN_USAGE_ERR(st, "missing rrtypes definition");
-
-	if (def) {
-		if ((r = ldh_radix_lookup(
-		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
-			return *r;
-		
-		if (def->fallback)
-			return dnsextlang_get_type_(
-			    def->fallback, rrtype, rrtype_strlen, st);
-	}
 	if (rrtype_strlen > 4
 	&& (rrtype[0] == 'T' || rrtype[0] == 't')
 	&& (rrtype[1] == 'Y' || rrtype[1] == 'y')
@@ -292,20 +321,62 @@ static inline int dnsextlang_get_type_(dnsextlang_def *def,
 			    "rrtype TYPE number must be < 65536", NULL, 0, 0);
 		return n;
 	}
-	return -RETURN_NOT_FOUND_ERR(st, "rrtype not found"); 
+	return -RETURN_NOT_FOUND_ERR(st, "rrtype not found");
+}
+
+static inline int dnsextlang_get_type_(dnsextlang_def *def,
+    const char *rrtype, size_t rrtype_strlen, return_status *st)
+{
+	const dnsextlang_stanza *r;
+       
+	if (!def)
+		return -RETURN_USAGE_ERR(st, "missing rrtypes definition");
+
+	if (def) {
+		if ((r = LDH_LOOKUP(
+		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
+			return r->number;
+		
+		if (def->fallback)
+			return dnsextlang_get_type_(
+			    def->fallback, rrtype, rrtype_strlen, st);
+	}
+	return dnsextlang_get_TYPE_rrtype(rrtype, rrtype_strlen, st);
 }
 
 static inline int dnsextlang_get_type(const char *rrtype)
 { return dnsextlang_get_type_(DNS_DEFAULT_RRTYPES,
       rrtype, ( rrtype ? strlen(rrtype) : 0 ), NULL); }
 
+const dnsextlang_stanza *dnsextlang_lookup__(
+    const char *s, size_t len, return_status *st);
 
-static inline dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
+static inline const dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
     const char *rrtype, size_t rrtype_strlen, return_status *st)
-{ int rrtype_int = dnsextlang_get_type_(def, rrtype, rrtype_strlen, st)
-; return rrtype_int >= 0 ? dnsextlang_get_stanza_(def, rrtype_int) : NULL; }
+{
+	const dnsextlang_stanza *r;
+	int ri;
+       
+	if (!def) {
+		(void) RETURN_USAGE_ERR(st, "missing rrtypes definition");
+		return NULL;
+	}
+	if (def) {
+		if ((r = LDH_LOOKUP(
+		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
+			return r;
+		
+		if (def->fallback)
+			return dnsextlang_lookup_(
+			    def->fallback, rrtype, rrtype_strlen, st);
+	}
+	ri = dnsextlang_get_TYPE_rrtype(rrtype, rrtype_strlen, st);
+	if (ri < 0)
+		return NULL;
+	return dnsextlang_get_stanza_(def, ri);
+}
 
-static inline dnsextlang_stanza *dnsextlang_lookup(const char *rrtype)
+static inline const dnsextlang_stanza *dnsextlang_lookup(const char *rrtype)
 { return dnsextlang_lookup_(
     NULL, rrtype, ( rrtype ? strlen(rrtype) : 0 ), NULL); }
 

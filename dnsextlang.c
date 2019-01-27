@@ -145,7 +145,7 @@ status_code ldh_radix_insert(ldh_radix **r,
 	if (!*r) {
 		if (!(*r = calloc(1, sizeof(ldh_radix) + len + 1)))
 			return RETURN_MEM_ERR(st, "allocating ldh_radix");
-		n_label = (void *)&(*r)->edges[LDH_RADIX_N_EDGES];
+		n_label = (void *)&(*r)->edges[LDH_N_EDGES];
 		(*r)->label = n_label;
 		(*r)->len = len;
 		ldh_radix_strncasecpy(n_label, str, len);
@@ -159,7 +159,7 @@ status_code ldh_radix_insert(ldh_radix **r,
 		if (!r_len)
 			return ldh_radix_insert(
 			    &(*r)->edges[(toupper(*str) - '-')
-			                % LDH_RADIX_N_EDGES],
+			                % LDH_N_EDGES],
 			    str, len, value, st);
 
 		if (toupper(*str) != *r_label)
@@ -174,7 +174,7 @@ status_code ldh_radix_insert(ldh_radix **r,
 	n_len = (*r)->len - r_len;
 	if (!(n = calloc(1, sizeof(ldh_radix) + n_len + 1)))
 		return RETURN_MEM_ERR(st, "allocating ldh_radix");
-	n_label = (void *)&n->edges[LDH_RADIX_N_EDGES];
+	n_label = (void *)&n->edges[LDH_N_EDGES];
 	n->label = n_label;
 	n->len = n_len;
 	ldh_radix_strncasecpy(n_label, (*r)->label, n_len);
@@ -182,12 +182,12 @@ status_code ldh_radix_insert(ldh_radix **r,
 	
 	(*r)->label = r_label;
 	(*r)->len = r_len;
-	n->edges[(toupper(*r_label) - '-') % LDH_RADIX_N_EDGES] = *r;
+	n->edges[(toupper(*r_label) - '-') % LDH_N_EDGES] = *r;
 	*r = n;
 
 	if (len)
 		return ldh_radix_insert(
-		    &(*r)->edges[(toupper(*str) - '-') % LDH_RADIX_N_EDGES],
+		    &(*r)->edges[(toupper(*str) - '-') % LDH_N_EDGES],
 		    str, len, value, st);
 
 	n->has_value = 1;
@@ -223,7 +223,7 @@ status_code ldh_radix_walk(char *buf, size_t bufsz, ldh_radix *r,
 		(void) memcpy(mybuf + l, r->label, r->len);
 		mybuf[l + r->len] = 0;
 	}
-	for (i = 0; i < LDH_RADIX_N_EDGES; i++) {
+	for (i = 0; i < LDH_N_EDGES; i++) {
 		if (!r->edges[i])
 			continue;
 		c = ldh_radix_walk(
@@ -245,6 +245,75 @@ status_code ldh_radix_walk(char *buf, size_t bufsz, ldh_radix *r,
 	return c;
 }
 
+status_code ldh_trie_insert(ldh_trie **rr,
+    const char *str, size_t len, const void *value, return_status *st)
+{
+       if (!rr)
+               return RETURN_USAGE_ERR(st,
+                   "missing reference to ldh_trie to register value");
+
+       for (;;) {
+               if (!*rr && !(*rr = calloc(1, sizeof(ldh_trie))))
+                       return RETURN_MEM_ERR(st, "allocating ldh_trie");
+               if (!len)
+                       break;
+
+               rr = &(*rr)->edges[(toupper(*str) - '-') % LDH_N_EDGES];
+               str++;
+               len--;
+       }
+       (*rr)->value = value;
+       return STATUS_OK;
+}
+
+status_code ldh_trie_walk(char *buf, size_t bufsz, ldh_trie *r,
+    ldh_trie_walk_func func, void *userarg, return_status *st)
+{
+	size_t i, l = 0;
+	char *mybuf;
+	status_code c;
+
+	if (!r)
+		return RETURN_USAGE_ERR(st, "no ldh_trie to walk");
+
+	if (buf && !bufsz)
+		return RETURN_USAGE_ERR(st, "buffer without size");
+
+	if ((mybuf = buf)) {
+		l = strlen(buf);
+		if (l + 2 >= bufsz) {
+			while (l + 2 >= bufsz)
+				bufsz *= 2;
+			if (mybuf != buf)
+				free(mybuf);
+			if (!(mybuf = calloc(1, bufsz)))
+				RETURN_MEM_ERR(st, "could not grow buffer");
+			(void) memcpy(mybuf, buf, l);
+			mybuf[l] = 0;
+		}
+		mybuf[l + 1] = 0;
+	}
+	for (i = 0; i < LDH_N_EDGES; i++) {
+		if (!r->edges[i])
+			continue;
+		if (mybuf)
+			mybuf[l] = '-' + i;
+		c = ldh_trie_walk(
+		    mybuf, bufsz, r->edges[i], func, userarg, st);
+		if (c) {
+			if (mybuf != buf)
+				free(mybuf);
+			return c;
+		}
+	}
+	if (mybuf)
+		mybuf[l] = 0;
+	c = func(mybuf, r, userarg, st);
+	if (mybuf && mybuf != buf)
+		free(mybuf);
+	return c;
+}
+
 static void p_del_free_str(
     size_t depth, uint64_t number, const void *ptr, void *userarg)
 {
@@ -261,6 +330,13 @@ static void p_del_free_branch(
 
 static status_code p_del_free_ldh_radix(
     char *str, ldh_radix *r, void *userarg, return_status *st)
+{
+	(void) str; (void) userarg; (void) st;
+	free(r); return STATUS_OK;
+}
+
+static status_code p_del_free_ldh_cont(
+    char *str, LDH_CONTAINER *r, void *userarg, return_status *st)
 {
 	(void) str; (void) userarg; (void) st;
 	free(r); return STATUS_OK;
@@ -335,8 +411,8 @@ static inline status_code p_del_def_add_stanza(
 	if ((c = uint16_table_add(&d->stanzas_by_u16, s->number, s, st)))
 		return c;
 
-	return ldh_radix_insert(
-	    &d->stanzas_by_ldh, s->name, strlen(s->name), s->number, st);
+	return LDH_INSERT(
+	    &d->stanzas_by_ldh, s->name, strlen(s->name), s, st);
 }
 
 /* Caller should produce MEM_ERR */
@@ -957,8 +1033,8 @@ void dnsextlang_def_free(dnsextlang_def *d)
 		return;
 	uint16_table_walk(d->stanzas_by_u16,
 	    p_del_free_stanza, p_del_free_branch, NULL);
-	(void) ldh_radix_walk(
-	    NULL, 0, d->stanzas_by_ldh, p_del_free_ldh_radix, NULL, NULL);
+	(void) LDH_WALK(
+	    NULL, 0, d->stanzas_by_ldh, p_del_free_ldh_cont, NULL, NULL);
 	free(d);
 }
 
