@@ -48,14 +48,10 @@ void zonefile_iter_free_in_use(zonefile_iter *i)
 	if (i->origin.malloced) {
 		free(i->origin.spc);
 		i->origin.spc = NULL;
-		i->origin.spc_sz = 0;
-		i->origin.malloced = 0;
 	}
 	if (i->owner.malloced) {
 		free(i->owner.spc);
 		i->owner.spc = NULL;
-		i->owner.spc_sz = 0;
-		i->owner.malloced = 0;
 	}
 	parser_free_in_use(&i->p);
 }
@@ -337,14 +333,14 @@ static inline status_code p_zfi_set_dname(zonefile_iter *i,
 	(void) parse_dereference(&dname->r, NULL);
 	dname->len = len;
 
-	if (!dname->spc) {
+	if (!dname->spc_sz) {
 		dname->r.text = text;
 		if (text >= i->p.text && text < i->p.end
 		&& (sc = parser_up_ref(&i->p, &dname->r, st)))
 			return sc;
 		return STATUS_OK;
 	}
-	if (len > dname->spc_sz) {
+	if (len > dname->spc_sz || !dname->spc) {
 		if (dname->spc) {
 			if (!dname->malloced)
 				return RETURN_OVERFLOW_ERR(st,
@@ -365,7 +361,9 @@ static inline status_code p_zfi_set_dname(zonefile_iter *i,
 			return RETURN_MEM_ERR(st,
 			    "could not allocate more "
 			    "space to fit dname from zone");
-	} 
+
+		dname->malloced = 1;
+	}
 	(void) memcpy(dname->spc, text, len);
 	dname->r.text = dname->spc;
 	return STATUS_OK;
@@ -503,10 +501,9 @@ static status_code p_zfi_init(
 	i->rr_class = cfg ? cfg->default_class : DNS_DEFAULT_CLASS;
 
 	i->origin.spc_sz = 1024;
-	if (!(i->origin.spc = calloc(1, i->origin.spc_sz)))
-		return RETURN_MEM_ERR(st, "allocating origin space "
-		                    "when initializing zonefile iterator");
+	i->origin.spc = NULL;
 	i->origin.malloced = 1;
+
 	if (cfg && cfg->default_origin
 	&& (sc = p_zfi_set_dname(i, &i->origin
 	                          , cfg->default_origin
@@ -514,10 +511,9 @@ static status_code p_zfi_init(
 		return sc;
 
 	i->owner.spc_sz = 1024;
-	if (!(i->owner.spc = calloc(1, i->owner.spc_sz)))
-		return RETURN_MEM_ERR(st, "allocating owner space "
-		                    "when initializing zonefile iterator");
+	i->owner.spc = NULL;
 	i->owner.malloced = 1;
+
 	i->same_owner = 0;
 	return STATUS_OK;
 }
