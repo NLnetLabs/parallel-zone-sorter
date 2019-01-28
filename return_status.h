@@ -38,15 +38,16 @@
 #include <stdio.h>
 
 typedef enum status_code {
-	STATUS_OK            = 0,
-	STATUS_IO_ERR        = 1, /* Check errno for details            */
-	STATUS_MEM_ERR       = 2, /* Failure to allocate memory         */
-	STATUS_PARSE_ERR     = 3, /* Syntax error while parsing strings */
-	STATUS_USAGE_ERR     = 4, /* Wrong usage by library user.       */
-	STATUS_DATA_ERR      = 5, /* Incoherent data structs            */
-	STATUS_INTERNAL_ERR  = 6, /* Internal deficiency!               */
-	STATUS_OVERFLOW_ERR  = 7, /* Something didn't fit               */
-	STATUS_NOT_FOUND_ERR = 8, /* Could not find requested item      */
+	STATUS_OK             = 0,
+	STATUS_IO_ERR         = 1, /* Check errno for details            */
+	STATUS_MEM_ERR        = 2, /* Failure to allocate memory         */
+	STATUS_PARSE_ERR      = 3, /* Syntax error while parsing strings */
+	STATUS_USAGE_ERR      = 4, /* Wrong usage by library user.       */
+	STATUS_DATA_ERR       = 5, /* Incoherent data structs            */
+	STATUS_INTERNAL_ERR   = 6, /* Internal deficiency!               */
+	STATUS_OVERFLOW_ERR   = 7, /* Something didn't fit               */
+	STATUS_NOT_FOUND_ERR  = 8, /* Could not find requested item      */
+	STATUS_STOP_ITERATION = 9, /* Iterator reached last element */
 } status_code;
 
 static inline const char *status_code2str(status_code code)

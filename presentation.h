@@ -46,7 +46,6 @@ typedef struct presentation_dname {
 
 typedef struct zonefile_iter {
 	parser             p;
-	status_code        code;
 
 	presentation_dname origin;
 	presentation_dname owner;
@@ -59,23 +58,23 @@ typedef struct zonefile_iter {
 	int                same_owner; /* owner same as with previous RR */
 } zonefile_iter;
 
-zonefile_iter *zonefile_iter_init_text_(dns_config *cfg,zonefile_iter *i,
+status_code zonefile_iter_init_text_(dns_config *cfg,zonefile_iter *i,
     const char *text, size_t text_len, return_status *st);
 
-zonefile_iter *zonefile_iter_init_fn_(dns_config *cfg, zonefile_iter *i,
+status_code zonefile_iter_init_fn_(dns_config *cfg, zonefile_iter *i,
     const char *fn, return_status *st);
 
-static inline zonefile_iter *zonefile_iter_init_text(
+static inline status_code zonefile_iter_init_text(
     zonefile_iter *i, const char *text, size_t text_len)
 { return zonefile_iter_init_text_(NULL, i, text, text_len, NULL); }
 
-static inline zonefile_iter *zonefile_iter_init_fn(
+static inline status_code zonefile_iter_init_fn(
    zonefile_iter *i, const char *fn)
 { return zonefile_iter_init_fn_(NULL, i, fn, NULL); }
 
-zonefile_iter *zonefile_iter_next_(zonefile_iter *i, return_status *st);
+status_code zonefile_iter_next_(zonefile_iter *i, return_status *st);
 
-static inline zonefile_iter *zonefile_iter_next(zonefile_iter *i)
+static inline status_code zonefile_iter_next(zonefile_iter *i)
 { return zonefile_iter_next_(i, NULL); }
 
 void zonefile_iter_free_in_use(zonefile_iter *i);

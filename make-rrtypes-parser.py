@@ -61,28 +61,50 @@ def make_switch(i, names, indent):
 	return ret
 		
 
-text = """int t;
-const dnsextlang_stanza *r;
-
-switch (len) {"""
+text = 'switch (len) {'
 for ln, names in get_len_names():
 	text += '\ncase %2d: ' % ln
 	text += make_switch(0, names, 9)
 text += """
 };
-if ((t = dnsextlang_get_TYPE_rrtype(s, len, st)) < 0)
-	return NULL;
-
-if ((r = dnsextlang_get_stanza_(dns_default_rrtypes, t)))
-	return r;
-
-(void) RETURN_NOT_FOUND_ERR(st, "rrtype not found");
 return NULL;
 """
 
-print 'const dnsextlang_stanza *dnsextlang_lookup__('
-print '    const char *s, size_t len, return_status *st)'
-print '{'
+print """ 
+const dnsextlang_stanza *p_dnsextlang_lookup_(
+    const char *s, size_t len, return_status *st)
+{"""
 for ln in text.split('\n'):
 	print '\t' + ln
-print '}'
+print """}
+
+const dnsextlang_stanza *dnsextlang_lookup_(
+    const char *s, size_t len, return_status *st)
+{
+	const dnsextlang_stanza *r;
+	int t;
+	
+	if ((r = p_dnsextlang_lookup_(s, len, st)))
+		return r;
+
+	if ((t = dnsextlang_get_TYPE_rrtype(s, len, st)) < 0)
+		return NULL;
+	
+	if ((r = dnsextlang_get_stanza_(dns_default_rrtypes, t)))
+		return r;
+	
+	(void) RETURN_NOT_FOUND_ERR(st, "rrtype not found");
+	return NULL;
+}
+
+int dnsextlang_get_type_(const char *s, size_t len, return_status *st)
+{
+	const dnsextlang_stanza *r;
+
+	if ((r = p_dnsextlang_lookup_(s, len, st)))
+		return r->number;
+
+	return dnsextlang_get_TYPE_rrtype(s, len, st);
+}
+"""
+

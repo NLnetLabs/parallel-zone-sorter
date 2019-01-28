@@ -39,7 +39,7 @@ int main(int argc, char **argv)
 {
 	dns_config      cfg = DNS_CONFIG_DEFAULTS;
 	return_status   st  = RETURN_STATUS_CLEAR;
-	zonefile_iter   zi_spc, *zi  = NULL;
+	zonefile_iter   zi;
 	size_t rr_count = 0;
 
 	if (argc < 2 || argc > 3) {
@@ -49,12 +49,16 @@ int main(int argc, char **argv)
 	if (argc == 3)
 		cfg.default_origin = argv[2];
 
-	for ( zi = zonefile_iter_init_fn_(&cfg, &zi_spc, argv[1], &st)
-	    ; zi ; zi = zonefile_iter_next_(zi, &st)) {
+	if (zonefile_iter_init_fn_(&cfg, &zi, argv[1], &st)) {
+		fprint_return_status(stderr, &st);
+		zonefile_iter_free_in_use(&zi);
+		return EXIT_FAILURE;
+	}
+	while (!zonefile_iter_next_(&zi, &st)) {
 #if 1
 		const dnsextlang_stanza *s;
-		if (!(s = dnsextlang_lookup__(zi->rr_type->start,
-		    zi->rr_type->end - zi->rr_type->start, &st))) {
+		if (!(s = dnsextlang_lookup_(zi.rr_type->start,
+		    zi.rr_type->end - zi.rr_type->start, &st))) {
 			fprint_return_status(stderr, &st);
 		}
 #endif
@@ -93,10 +97,8 @@ int main(int argc, char **argv)
 		rr_count++;
 	}
 	if (st.code) {
-		fprintf(stderr, "%d\n", (int)st.code);
 		fprint_return_status(stderr, &st);
-		zonefile_iter_free_in_use(&zi_spc);
-
+		zonefile_iter_free_in_use(&zi);
 	}
 	printf("Counted %zu RRs in zone %s\n", rr_count, argv[1]);
 	return st.code ? EXIT_FAILURE : EXIT_SUCCESS;

@@ -3227,12 +3227,10 @@ static ldh_trie rr_ldh_trie = {
 static dnsextlang_def p_dns_default_rrtypes = {
 	(void *)rrtypes_table, &rr_ldh_trie, NULL };
 dnsextlang_def *dns_default_rrtypes = &p_dns_default_rrtypes;
-const dnsextlang_stanza *dnsextlang_lookup__(
+ 
+const dnsextlang_stanza *p_dnsextlang_lookup_(
     const char *s, size_t len, return_status *st)
 {
-	int t;
-	const dnsextlang_stanza *r;
-	
 	switch (len) {
 	case  1: switch (s[0]) {
 	         case 'A': 
@@ -3548,6 +3546,19 @@ const dnsextlang_stanza *dnsextlang_lookup__(
 	         };
 	         break;
 	};
+	return NULL;
+	
+}
+
+const dnsextlang_stanza *dnsextlang_lookup_(
+    const char *s, size_t len, return_status *st)
+{
+	const dnsextlang_stanza *r;
+	int t;
+	
+	if ((r = p_dnsextlang_lookup_(s, len, st)))
+		return r;
+
 	if ((t = dnsextlang_get_TYPE_rrtype(s, len, st)) < 0)
 		return NULL;
 	
@@ -3556,5 +3567,15 @@ const dnsextlang_stanza *dnsextlang_lookup__(
 	
 	(void) RETURN_NOT_FOUND_ERR(st, "rrtype not found");
 	return NULL;
-	
 }
+
+int dnsextlang_get_type_(const char *s, size_t len, return_status *st)
+{
+	const dnsextlang_stanza *r;
+
+	if ((r = p_dnsextlang_lookup_(s, len, st)))
+		return r->number;
+
+	return dnsextlang_get_TYPE_rrtype(s, len, st);
+}
+

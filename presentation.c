@@ -60,28 +60,29 @@ void zonefile_iter_free_in_use(zonefile_iter *i)
 	parser_free_in_use(&i->p);
 }
 
-static inline zonefile_iter *p_zfi_at_end(zonefile_iter *i, return_status *st)
+static inline status_code p_zfi_at_end(zonefile_iter *i, return_status *st)
 {
 	if (i->p.cur) {
 		assert(i->p.cur == i->p.end);
 		i->p.cur = NULL;
 		i->p.cur_piece->start = NULL;
-		return i;
+		return STATUS_OK;
 	}
 	zonefile_iter_free_in_use(i);
-	return NULL;
+	return STATUS_STOP_ITERATION;
 }
 
-static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st);
-static inline zonefile_iter *p_zfi_return(zonefile_iter *i, return_status *st)
+static status_code p_zfi_get_piece(zonefile_iter *i, return_status *st);
+static inline status_code p_zfi_return(zonefile_iter *i, return_status *st)
 {
-	assert(i);
+	status_code sc;
+
 	if (*i->p.cur++ == '\n') {
 		i->p.line_nr += 1;
 		i->p.sol = i->p.cur;
 	}
-	if ((i->code = parser_progressive_munmap(&i->p, st)))
-		return NULL;
+	if ((sc = parser_progressive_munmap(&i->p, st)))
+		return sc;
 
 	if (i->p.cur_piece == i->p.pieces) {
 		/* Nothing, so process next line*/
@@ -90,12 +91,14 @@ static inline zonefile_iter *p_zfi_return(zonefile_iter *i, return_status *st)
 		                  : p_zfi_at_end(i, st);
 	}
 	i->p.cur_piece->start = NULL;
-	return i;
+	return STATUS_OK;
 }
 
-static inline zonefile_iter *p_zfi_get_closing_piece(
+static inline status_code p_zfi_get_closing_piece(
     zonefile_iter *i, return_status *st)
 {
+	status_code sc;
+
 	switch (*i->p.cur) {
 	case ';':
 		/* A comment is NO PART, but skip till end-of-line */
@@ -131,23 +134,23 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 		return p_zfi_get_piece(i, st);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		if ((i->code = equip_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = equip_cur_piece(&i->p, st)))
+			return sc;
 		i->p.cur += 1;
 		while (i->p.cur < i->p.end)
 			switch (*i->p.cur) {
 			case '\n':
 				/* Newline is end of quoted piece too */
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				/* p_zfi_get_closing_piece()
 				 * does cur and line_nr incr. */
 				return p_zfi_get_closing_piece(i, st);
 			case '"':
 				/* Closing quote found, get next piece */
 				i->p.cur += 1;
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				return p_zfi_get_closing_piece(i, st);
 
 			case '\\':
@@ -161,27 +164,27 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 				continue;
 			}
 
-		if ((i->code = increment_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = increment_cur_piece(&i->p, st)))
+			return sc;
 		return p_zfi_at_end(i, st);
 
 	default:
-		if ((i->code = equip_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = equip_cur_piece(&i->p, st)))
+			return sc;
 		while (i->p.cur < i->p.end)
 			switch (*i->p.cur) {
 			case '\n':
 			case ' ': case '\t': case '\f':
 				/* Whitespace piece, get (but actually skip) */
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				/* p_zfi_get_closing_piece()
 				 * does cur and line_nr incr. */
 				return p_zfi_get_closing_piece(i, st);
 
 			case ')':
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				i->p.cur += 1;
 				return p_zfi_get_piece(i, st);
 
@@ -190,14 +193,16 @@ static inline zonefile_iter *p_zfi_get_closing_piece(
 				i->p.cur += 1;
 				continue;
 			}
-		if ((i->code = increment_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = increment_cur_piece(&i->p, st)))
+			return sc;
 		return p_zfi_at_end(i, st);
 	}
 }
 
-static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
+static status_code p_zfi_get_piece(zonefile_iter *i, return_status *st)
 {
+	status_code sc;
+
 	switch (*i->p.cur) {
 	case ';':
 		/* A comment is NO PART, but skip till end-of-line */
@@ -236,15 +241,15 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 		return p_zfi_get_closing_piece(i, st);
 
 	case '"': /* quoted piece (may contain whitespace) */
-		if ((i->code = equip_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = equip_cur_piece(&i->p, st)))
+			return sc;
 		i->p.cur += 1;
 		while (i->p.cur < i->p.end)
 			switch (*i->p.cur) {
 			case '\n':
 				/* Remaining space is no piece */
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				/* p_zfi_return()
 				 * does cur and line_nr incr. */
 				return p_zfi_return(i, st);
@@ -252,8 +257,8 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 			case '"':
 				/* Closing quote found, get next piece */
 				i->p.cur += 1;
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				return p_zfi_get_piece(i, st);
 
 			case '\\':
@@ -266,27 +271,27 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 				i->p.cur += 1;
 				continue;
 			}
-		if ((i->code = increment_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = increment_cur_piece(&i->p, st)))
+			return sc;
 		return p_zfi_at_end(i, st);
 
 	default: /* unquoted piece (bounded by whitespace) */
-		if ((i->code = equip_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = equip_cur_piece(&i->p, st)))
+			return sc;
 		while (i->p.cur < i->p.end)
 			switch (*i->p.cur) {
 			case '\n':
 				/* Remaining space is no piece */
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				/* p_zfi_return()
 				 * does cur and line_nr incr. */
 				return p_zfi_return(i, st);
 
 			case ' ': case '\t': case '\f':
 				/* Whitespace piece, get (but actually skip) */
-				if ((i->code = increment_cur_piece(&i->p, st)))
-					return NULL;
+				if ((sc = increment_cur_piece(&i->p, st)))
+					return sc;
 				return p_zfi_get_piece(i, st);
 
 			case '\\':
@@ -299,42 +304,56 @@ static zonefile_iter *p_zfi_get_piece(zonefile_iter *i, return_status *st)
 				i->p.cur += 1;
 				continue;
 			}
-		if ((i->code = increment_cur_piece(&i->p, st)))
-			return NULL;
+		if ((sc = increment_cur_piece(&i->p, st)))
+			return sc;
 		return p_zfi_at_end(i, st);
 	}
 }
 
-static inline zonefile_iter *pf_ttl2u32(zonefile_iter *i,
+static inline status_code pf_ttl2u32(zonefile_iter *i,
     const char *pf_ttl, size_t pf_ttl_len, uint32_t *rttl, return_status *st)
 {
 	char buf[11], *endptr;
 
 	if (pf_ttl_len >= sizeof(buf))
-		return 0;
+		return RETURN_PARSE_ERR(st, "in ttl value",
+		    i->p.fn, i->p.line_nr, pf_ttl - i->p.sol);
+
 	(void) memcpy(buf, pf_ttl, pf_ttl_len);
 	buf[pf_ttl_len] = '\0';
 	*rttl = strtoul(buf, &endptr, 10);
 	if (*endptr != 0)
-		return NULL_PARSE_ERR(&i->code, st, "in ttl value",
+		return RETURN_PARSE_ERR(st, "in ttl value",
 		    i->p.fn, i->p.line_nr, pf_ttl - i->p.sol);
-	return i;
+
+	return STATUS_OK;
 }
 
-static inline void *p_zfi_set_dname(zonefile_iter *i,
+static inline status_code p_zfi_set_dname(zonefile_iter *i,
     presentation_dname *dname, const char *text, size_t len, return_status *st)
 {
+	status_code sc;
+
 	(void) parse_dereference(&dname->r, NULL);
 	dname->len = len;
 
+	if (!dname->spc) {
+		dname->r.text = text;
+		if (text >= i->p.text && text < i->p.end
+		&& (sc = parser_up_ref(&i->p, &dname->r, st)))
+			return sc;
+		return STATUS_OK;
+	}
 	if (len > dname->spc_sz) {
 		if (dname->spc) {
 			if (!dname->malloced)
-				return NULL_OVERFLOW_ERR(&i->code, st,
+				return RETURN_OVERFLOW_ERR(st,
 				   "dname from zone does not "
 				   "fit the fixed sized buffer");
-			else
+			else {
 				free(dname->spc);
+				dname->spc = NULL;
+			}
 		}
 		if (!dname->spc_sz)
 			dname->spc_sz = ((len / 1024) + 1) * 1024;
@@ -343,25 +362,19 @@ static inline void *p_zfi_set_dname(zonefile_iter *i,
 			dname->spc_sz *= 2;
 
 		if (!(dname->spc = calloc(1, dname->spc_sz)))
-			return NULL_MEM_ERR(&i->code, st,
+			return RETURN_MEM_ERR(st,
 			    "could not allocate more "
 			    "space to fit dname from zone");
 	} 
-	if (dname->spc && len < dname->spc_sz) {
-		(void) memcpy(dname->spc, text, len);
-		dname->r.text = dname->spc;
-		return i;
-	}
-	dname->r.text = text;
-	if (text >= i->p.text && text < i->p.end
-	&& (i->code = parser_up_ref(&i->p, &dname->r, st)))
-		return NULL;
-	return i;
+	(void) memcpy(dname->spc, text, len);
+	dname->r.text = dname->spc;
+	return STATUS_OK;
 }
 
-static inline zonefile_iter *
+static inline status_code
 p_zfi_process_rr(zonefile_iter *i, return_status *st)
 {
+	status_code sc;
 	parse_piece *piece = i->p.pieces;
 	ssize_t piece_sz;
 
@@ -376,8 +389,9 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 	       || piece->start[0] != '$') {
 		/* Owner */
 
-		if (!p_zfi_set_dname(i, &i->owner, piece->start, piece_sz, st))
-			return NULL;
+		if ((sc = p_zfi_set_dname(
+		    i, &i->owner, piece->start, piece_sz, st)))
+			return sc;
 		piece++;
 		piece_sz = (piece->end - piece->start);
 
@@ -385,17 +399,17 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 	       && strncasecmp(piece->start, "$ORIGIN", 7) == 0) {
 		/* $ORIGIN */
 		piece++;
-		if (!p_zfi_set_dname(i, &i->origin,
-		    piece->start, piece->end - piece->start, st))
-			return NULL;
+		if ((sc = p_zfi_set_dname(i, &i->origin,
+		    piece->start, piece->end - piece->start, st)))
+			return sc;
 		return zonefile_iter_next_(i, st);
 
 	} else if (piece_sz == 4 && strncasecmp(piece->start, "$TTL", 4) == 0) {
 		/* $TTL */
 		piece++;
-		if (!pf_ttl2u32( i, piece->start, piece->end - piece->start
-		               , &i->TTL, st))
-			return NULL;
+		if ((sc = pf_ttl2u32(
+		    i, piece->start, piece->end - piece->start, &i->TTL, st)))
+			return sc;
 		return zonefile_iter_next_(i, st);
 	} else {
 		/* Other $ directive */
@@ -404,9 +418,9 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 	/* Skip class */
 	if (piece->start && piece->start[0] >= '0' && piece->start[0] <= '9') {
 		/* TTL */
-		if (!pf_ttl2u32( i, piece->start, piece->end - piece->start
-		               ,&i->ttl, st))
-			return NULL;
+		if ((sc = pf_ttl2u32(
+		    i, piece->start, piece->end - piece->start ,&i->ttl, st)))
+			return sc;
 		piece++;
 		piece_sz = (piece->end - piece->start);
 	} else {
@@ -443,7 +457,7 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 		c = strtoul(nptr, &endptr, 10);
 		if (*endptr == 0) {
 			if (c > 65535)
-				return NULL_PARSE_ERR(&i->code, st,
+				return RETURN_PARSE_ERR(st,
 				    "DNS classes range from [0 ... 65535]",
 				    i->p.fn, i->p.line_nr,
 				    (piece->start - i->p.sol));
@@ -452,85 +466,90 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 		} /* Else warning about suspicous RR type name */
 	}
 	i->rr_type = piece;
-	return i;
+	return STATUS_OK;
 }
 
-zonefile_iter *zonefile_iter_next_(zonefile_iter *i, return_status *st)
+status_code zonefile_iter_next_(zonefile_iter *i, return_status *st)
 {
-	if (!i)
-		return (RETURN_USAGE_ERR(st,
-		    "missing reference to zonefile_iter to next"), NULL);
+	status_code sc;
 
-       	if ((i->code = reset_cur_piece(&i->p, st)))
-		return NULL;
+	if (!i)
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to zonefile_iter to next");
+
+       	if ((sc = reset_cur_piece(&i->p, st)))
+		return sc;
 
 	i->p.start = i->p.cur;
 	if (!i->p.start)
 		return p_zfi_at_end(i, st);
 
-	if (!p_zfi_get_piece(i, st))
-		return NULL;
+	if ((sc = p_zfi_get_piece(i, st)))
+		return sc;
 
 	return p_zfi_process_rr(i, st);
 }
 
-static zonefile_iter *p_zfi_init(
+static status_code p_zfi_init(
     dns_config *cfg, zonefile_iter *i, return_status *st)
 {
+	status_code sc;
+
 	if (!i)
-		return (RETURN_INTERNAL_ERR(st,
-		    "missing reference to zonefile_iter to initialize"), NULL);
+		return RETURN_INTERNAL_ERR(st,
+		    "missing reference to zonefile_iter to initialize");
 
 	i->TTL      = cfg ? cfg->default_ttl   : DNS_DEFAULT_TTL;
 	i->rr_class = cfg ? cfg->default_class : DNS_DEFAULT_CLASS;
-	i->code     = STATUS_OK;
 
 	i->origin.spc_sz = 1024;
 	if (!(i->origin.spc = calloc(1, i->origin.spc_sz)))
-		return NULL_MEM_ERR(&i->code, st, "allocating origin space "
+		return RETURN_MEM_ERR(st, "allocating origin space "
 		                    "when initializing zonefile iterator");
 	i->origin.malloced = 1;
 	if (cfg && cfg->default_origin
-	&& !p_zfi_set_dname(i, &i->origin
-	                     , cfg->default_origin
-	                     , strlen(cfg->default_origin), st))
-		return NULL;
+	&& (sc = p_zfi_set_dname(i, &i->origin
+	                          , cfg->default_origin
+	                          , strlen(cfg->default_origin), st)))
+		return sc;
 
 	i->owner.spc_sz = 1024;
 	if (!(i->owner.spc = calloc(1, i->owner.spc_sz)))
-		return NULL_MEM_ERR(&i->code, st, "allocating owner space "
+		return RETURN_MEM_ERR(st, "allocating owner space "
 		                    "when initializing zonefile iterator");
 	i->owner.malloced = 1;
-
 	i->same_owner = 0;
-
-	return zonefile_iter_next_(i, st);
+	return STATUS_OK;
 }
 
-zonefile_iter *zonefile_iter_init_text_(dns_config *cfg, zonefile_iter *i,
+status_code zonefile_iter_init_text_(dns_config *cfg, zonefile_iter *i,
     const char *text, size_t text_len, return_status *st)
 {
+	status_code sc;
+
 	if (!i)
-		return (RETURN_USAGE_ERR(st,
-		    "missing reference to zonefile_iter to initialize"), NULL);
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to zonefile_iter to initialize");
 
 	(void) memset(i, 0, sizeof(*i));
-	if ((i->code = parser_init(&i->p, text, text_len, st)))
-		return NULL;
+	if ((sc = parser_init(&i->p, text, text_len, st)))
+		return sc;
 	
 	return p_zfi_init(cfg, i, st);
 }
 
-zonefile_iter *zonefile_iter_init_fn_(dns_config *cfg,
+status_code zonefile_iter_init_fn_(dns_config *cfg,
     zonefile_iter *i, const char *fn, return_status *st)
 {
+	status_code sc;
+	
 	if (!i)
-		return (RETURN_USAGE_ERR(st,
-		    "missing reference to zonefile_iter to initialize"), NULL);
+		return RETURN_USAGE_ERR(st,
+		    "missing reference to zonefile_iter to initialize");
 
 	(void) memset(i, 0, sizeof(*i));
-	if ((i->code = parser_init_fn(&i->p, fn, st)))
-		return NULL;
+	if ((sc = parser_init_fn(&i->p, fn, st)))
+		return sc;
 	
 	return p_zfi_init(cfg, i, st);
 }

@@ -324,7 +324,10 @@ static inline int dnsextlang_get_TYPE_rrtype(
 	return -RETURN_NOT_FOUND_ERR(st, "rrtype not found");
 }
 
-static inline int dnsextlang_get_type_(dnsextlang_def *def,
+int dnsextlang_get_type_(
+    const char *rrtype, size_t rrtype_strlen, return_status *st);
+
+static inline int dnsextlang_get_type__(dnsextlang_def *def,
     const char *rrtype, size_t rrtype_strlen, return_status *st)
 {
 	const dnsextlang_stanza *r;
@@ -336,22 +339,25 @@ static inline int dnsextlang_get_type_(dnsextlang_def *def,
 		if ((r = LDH_LOOKUP(
 		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
 			return r->number;
-		
-		if (def->fallback)
+
+		if (def->fallback == dns_default_rrtypes)
 			return dnsextlang_get_type_(
+			    rrtype, rrtype_strlen, st);
+
+		if (def->fallback)
+			return dnsextlang_get_type__(
 			    def->fallback, rrtype, rrtype_strlen, st);
 	}
 	return dnsextlang_get_TYPE_rrtype(rrtype, rrtype_strlen, st);
 }
 
 static inline int dnsextlang_get_type(const char *rrtype)
-{ return dnsextlang_get_type_(DNS_DEFAULT_RRTYPES,
-      rrtype, ( rrtype ? strlen(rrtype) : 0 ), NULL); }
+{ return dnsextlang_get_type_(rrtype, (rrtype ? strlen(rrtype) : 0), NULL); }
 
-const dnsextlang_stanza *dnsextlang_lookup__(
+const dnsextlang_stanza *dnsextlang_lookup_(
     const char *s, size_t len, return_status *st);
 
-static inline const dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
+static inline const dnsextlang_stanza *dnsextlang_lookup__(dnsextlang_def *def,
     const char *rrtype, size_t rrtype_strlen, return_status *st)
 {
 	const dnsextlang_stanza *r;
@@ -366,8 +372,11 @@ static inline const dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
 		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
 			return r;
 		
+		if (def->fallback == dns_default_rrtypes)
+			return dnsextlang_lookup_(rrtype, rrtype_strlen, st);
+
 		if (def->fallback)
-			return dnsextlang_lookup_(
+			return dnsextlang_lookup__(
 			    def->fallback, rrtype, rrtype_strlen, st);
 	}
 	ri = dnsextlang_get_TYPE_rrtype(rrtype, rrtype_strlen, st);
@@ -376,9 +385,11 @@ static inline const dnsextlang_stanza *dnsextlang_lookup_(dnsextlang_def *def,
 	return dnsextlang_get_stanza_(def, ri);
 }
 
+const dnsextlang_stanza *dnsextlang_lookup_(
+    const char *s, size_t len, return_status *st);
+
 static inline const dnsextlang_stanza *dnsextlang_lookup(const char *rrtype)
-{ return dnsextlang_lookup_(
-    NULL, rrtype, ( rrtype ? strlen(rrtype) : 0 ), NULL); }
+{ return dnsextlang_lookup_(rrtype, ( rrtype ? strlen(rrtype) : 0 ), NULL); }
 
 dnsextlang_def *dnsextlang_def_new_from_text_(
     dns_config *cfg, const char *text, size_t text_len, return_status *st);
