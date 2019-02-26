@@ -38,16 +38,17 @@
 #include <stdio.h>
 
 typedef enum status_code {
-	STATUS_OK             = 0,
-	STATUS_IO_ERR         = 1, /* Check errno for details            */
-	STATUS_MEM_ERR        = 2, /* Failure to allocate memory         */
-	STATUS_PARSE_ERR      = 3, /* Syntax error while parsing strings */
-	STATUS_USAGE_ERR      = 4, /* Wrong usage by library user.       */
-	STATUS_DATA_ERR       = 5, /* Incoherent data structs            */
-	STATUS_INTERNAL_ERR   = 6, /* Internal deficiency!               */
-	STATUS_OVERFLOW_ERR   = 7, /* Something didn't fit               */
-	STATUS_NOT_FOUND_ERR  = 8, /* Could not find requested item      */
-	STATUS_STOP_ITERATION = 9, /* Iterator reached last element */
+	STATUS_OK             =  0,
+	STATUS_IO_ERR         =  1, /* Check errno for details            */
+	STATUS_MEM_ERR        =  2, /* Failure to allocate memory         */
+	STATUS_PARSE_ERR      =  3, /* Syntax error while parsing strings */
+	STATUS_USAGE_ERR      =  4, /* Wrong usage by library user.       */
+	STATUS_DATA_ERR       =  5, /* Incoherent data structs            */
+	STATUS_INTERNAL_ERR   =  6, /* Internal deficiency!               */
+	STATUS_OVERFLOW_ERR   =  7, /* Something didn't fit               */
+	STATUS_NOT_FOUND_ERR  =  8, /* Could not find requested item      */
+	STATUS_STOP_ITERATION =  9, /* Iterator reached last element */
+	STATUS_PTHREAD_ERR    = 10, /* A pthread func erred */
 } status_code;
 
 static inline const char *status_code2str(status_code code)
@@ -67,6 +68,10 @@ typedef struct parse_error_details {
 	size_t      col_nr;
 } parse_error_details;
 
+typedef struct pthread_error_details {
+	int  errno;
+} pthread_error_details;
+
 typedef struct return_status {
 	status_code code;
 	const char *msg;
@@ -74,7 +79,8 @@ typedef struct return_status {
 	const char *file;
 	int         line;
 	union {
-		parse_error_details parse;
+		parse_error_details   parse;
+		pthread_error_details pthread;
 	} details;
 } return_status;
 
@@ -102,7 +108,7 @@ static inline int fprint_return_status(FILE *f, return_status *stat)
 	else	t += r;
 
 	if (stat->code == STATUS_PARSE_ERR) {
-		if ((r = fprintf(f, "in \"%s\" at line %zu col %zu\n\tin "
+		if ((r = fprintf(f, "\"%s\" at line %zu col %zu\n\tin "
 		                  , stat->details.parse.fn
 		                  , stat->details.parse.line_nr + 1
 		                  , stat->details.parse.col_nr + 1)) < 0)
@@ -128,12 +134,6 @@ static inline int fprint_return_status(FILE *f, return_status *stat)
       , ((STAT)->code = STATUS_ ## NAME ## _ERR) ) \
     : STATUS_ ## NAME ## _ERR \
     )
-#define NULL_ERR(NAME, RCODE, ...) ( \
-      (uintptr_t)(RCODE) != (uintptr_t)NULL \
-    ? ((*(RCODE) = RETURN_ ## NAME ## _ERR(__VA_ARGS__)), NULL) \
-    : (            RETURN_ ## NAME ## _ERR(__VA_ARGS__) , NULL) \
-    )
-
 #define RETURN_PARSE_ERR(STAT, MSG, FN, LINE_NR, COL_NR) ( \
       (intptr_t)(STAT ) != (uintptr_t)NULL \
     ? ( ((STAT)->details.parse.fn      = (FN)) \
@@ -142,22 +142,19 @@ static inline int fprint_return_status(FILE *f, return_status *stat)
       , RETURN_ERR(PARSE, (STAT), (MSG))) \
     : STATUS_PARSE_ERR \
     )
-#define   NULL_PARSE_ERR(...)       NULL_ERR(PARSE    , __VA_ARGS__)
+#define RETURN_PTHREAD_ERR(STAT, MSG, ERRNO) ( \
+      (intptr_t)(STAT ) != (uintptr_t)NULL \
+    ? ( ((STAT)->details.pthread.errno = (ERRNO)) \
+      , RETURN_ERR(PARSE, (STAT), (MSG))) \
+    : STATUS_PTHREAD_ERR \
+    )
 
 #define RETURN_IO_ERR(...)        RETURN_ERR(IO       , __VA_ARGS__)
-#define   NULL_IO_ERR(...)          NULL_ERR(IO       , __VA_ARGS__)
 #define RETURN_MEM_ERR(...)       RETURN_ERR(MEM      , __VA_ARGS__)
-#define   NULL_MEM_ERR(...)         NULL_ERR(MEM      , __VA_ARGS__)
 #define RETURN_USAGE_ERR(...)     RETURN_ERR(USAGE    , __VA_ARGS__)
-#define   NULL_USAGE_ERR(...)       NULL_ERR(USAGE    , __VA_ARGS__)
 #define RETURN_DATA_ERR(...)      RETURN_ERR(DATA     , __VA_ARGS__)
-#define   NULL_DATA_ERR(...)        NULL_ERR(DATA     , __VA_ARGS__)
 #define RETURN_INTERNAL_ERR(...)  RETURN_ERR(INTERNAL , __VA_ARGS__)
-#define   NULL_INTERNAL_ERR(...)    NULL_ERR(INTERNAL , __VA_ARGS__)
 #define RETURN_OVERFLOW_ERR(...)  RETURN_ERR(OVERFLOW , __VA_ARGS__)
-#define   NULL_OVERFLOW_ERR(...)    NULL_ERR(OVERFLOW , __VA_ARGS__)
 #define RETURN_NOT_FOUND_ERR(...) RETURN_ERR(NOT_FOUND, __VA_ARGS__)
-#define   NULL_NOT_FOUND_ERR(...)   NULL_ERR(NOT_FOUND, __VA_ARGS__)
-
 
 #endif /* #ifndef RETURN_STATUS_H_ */

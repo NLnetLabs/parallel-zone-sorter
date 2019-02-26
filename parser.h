@@ -175,7 +175,7 @@ static inline void parser_free_in_use(parser *p)
 	if (!p)
 		return;
 
-      	if (p->pieces) {
+      	if (p->pieces && p->pieces_malloced) {
 		free(p->pieces);
 		p->pieces = NULL;
 		p->end_of_pieces = NULL;
@@ -213,6 +213,7 @@ static inline status_code parser_progressive_munmap(
 	else
 		return STATUS_OK; /* parsing has not yet started */
 
+	assert(n_to_munmap >= 0);
 	if (n_to_munmap < 0)
 		return RETURN_DATA_ERR(st,
 		    "p->to_munmap progressed beyond referenced text");
@@ -295,6 +296,9 @@ static inline status_code increment_cur_piece(parser *p, return_status *st)
 		size_t cur_piece_off, n_pieces;
 		parse_piece *pieces;
 
+		if (!p->pieces_malloced)
+			return RETURN_OVERFLOW_ERR(st,
+			    "pieces overflow");
 		if (!p->pieces)
 			return RETURN_DATA_ERR(st,
 			    "cannot grow uninitialized parser pieces");

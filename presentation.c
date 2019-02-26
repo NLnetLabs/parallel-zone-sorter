@@ -86,6 +86,7 @@ static inline status_code p_zfi_return(zonefile_iter *i, return_status *st)
 		return i->p.start ? p_zfi_get_piece(i, st)
 		                  : p_zfi_at_end(i, st);
 	}
+	i->rr.end = i->p.cur_piece;
 	i->p.cur_piece->start = NULL;
 	return STATUS_OK;
 }
@@ -326,7 +327,8 @@ static inline status_code pf_ttl2u32(zonefile_iter *i,
 }
 
 static inline status_code p_zfi_set_dname(zonefile_iter *i,
-    presentation_dname *dname, const char *text, size_t len, return_status *st)
+    presentation_dname *dname, const char **text_ptr,
+    const char *text, size_t len, return_status *st)
 {
 	status_code sc;
 
@@ -334,7 +336,7 @@ static inline status_code p_zfi_set_dname(zonefile_iter *i,
 	dname->len = len;
 
 	if (!dname->spc_sz) {
-		dname->r.text = text;
+		*text_ptr = dname->r.text = text;
 		if (text >= i->p.text && text < i->p.end
 		&& (sc = parser_up_ref(&i->p, &dname->r, st)))
 			return sc;
@@ -365,7 +367,7 @@ static inline status_code p_zfi_set_dname(zonefile_iter *i,
 		dname->malloced = 1;
 	}
 	(void) memcpy(dname->spc, text, len);
-	dname->r.text = dname->spc;
+	*text_ptr = dname->r.text = dname->spc;
 	return STATUS_OK;
 }
 
@@ -388,7 +390,7 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 		/* Owner */
 
 		if ((sc = p_zfi_set_dname(
-		    i, &i->owner, piece->start, piece_sz, st)))
+		    i, &i->owner, &i->rr.owner, piece->start, piece_sz, st)))
 			return sc;
 		piece++;
 		piece_sz = (piece->end - piece->start);
@@ -397,7 +399,7 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 	       && strncasecmp(piece->start, "$ORIGIN", 7) == 0) {
 		/* $ORIGIN */
 		piece++;
-		if ((sc = p_zfi_set_dname(i, &i->origin,
+		if ((sc = p_zfi_set_dname(i, &i->origin, &i->rr.origin,
 		    piece->start, piece->end - piece->start, st)))
 			return sc;
 		return zonefile_iter_next_(i, st);
@@ -416,29 +418,29 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 	/* Skip class */
 	if (piece->start && piece->start[0] >= '0' && piece->start[0] <= '9') {
 		/* TTL */
-		if ((sc = pf_ttl2u32(
-		    i, piece->start, piece->end - piece->start ,&i->ttl, st)))
+		if ((sc = pf_ttl2u32(i, piece->start,
+		    piece->end - piece->start, &i->rr.ttl, st)))
 			return sc;
 		piece++;
 		piece_sz = (piece->end - piece->start);
 	} else {
-		i->ttl = i->TTL;
+		i->rr.ttl = i->TTL;
 	}
 	/* Is last piece class? */
 	if (piece_sz == 2) {
 		if ((piece->start[0] == 'I' || piece->start[0] == 'i')
 		&&  (piece->start[1] == 'N' || piece->start[1] == 'n')) {
-			i->rr_class = 1;
+			i->rr.rr_class = 1;
 			piece++;
 
 		} else if ((piece->start[0] == 'C' || piece->start[0] == 'c')
 		       &&  (piece->start[1] == 'H' || piece->start[1] == 'h')) {
-			i->rr_class = 3;
+			i->rr.rr_class = 3;
 			piece++;
 
 		} else if ((piece->start[0] == 'H' || piece->start[0] == 'h')
 		       &&  (piece->start[1] == 'S' || piece->start[1] == 's')) {
-			i->rr_class = 4;
+			i->rr.rr_class = 4;
 			piece++;
 		}
 	} else if (piece_sz > 5 && piece_sz < 11
@@ -459,11 +461,11 @@ p_zfi_process_rr(zonefile_iter *i, return_status *st)
 				    "DNS classes range from [0 ... 65535]",
 				    i->p.fn, i->p.line_nr,
 				    (piece->start - i->p.sol));
-			i->rr_class = c;
+			i->rr.rr_class = c;
 			piece++;
 		} /* Else warning about suspicous RR type name */
 	}
-	i->rr_type = piece;
+	i->rr.rr_type = piece;
 	return STATUS_OK;
 }
 
@@ -497,15 +499,15 @@ static status_code p_zfi_init(
 		return RETURN_INTERNAL_ERR(st,
 		    "missing reference to zonefile_iter to initialize");
 
-	i->TTL      = cfg ? cfg->default_ttl   : DNS_DEFAULT_TTL;
-	i->rr_class = cfg ? cfg->default_class : DNS_DEFAULT_CLASS;
+	i->TTL         = cfg ? cfg->default_ttl   : DNS_DEFAULT_TTL;
+	i->rr.rr_class = cfg ? cfg->default_class : DNS_DEFAULT_CLASS;
 
 	i->origin.spc_sz = 1024;
 	i->origin.spc = NULL;
 	i->origin.malloced = 1;
 
 	if (cfg && cfg->default_origin
-	&& (sc = p_zfi_set_dname(i, &i->origin
+	&& (sc = p_zfi_set_dname(i, &i->origin, &i->rr.origin
 	                          , cfg->default_origin
 	                          , strlen(cfg->default_origin), st)))
 		return sc;

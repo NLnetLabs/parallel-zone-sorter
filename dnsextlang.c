@@ -43,6 +43,12 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+void uint_table_free(size_t d, uint64_t n, const void *ptr, void *u)
+{
+	(void) d; (void) n; (void) u;
+	free((void *)ptr);
+}
+
 status_code uint8_table_add(
     uint8_table **tabler, uint8_t value, const void *ptr, return_status *st)
 {
@@ -131,7 +137,7 @@ static inline void ldh_radix_strncasecpy(char *dst, const char *src, size_t n)
 { while (n--) *dst++ = toupper(*src++); }
 
 status_code ldh_radix_insert(ldh_radix **r,
-    const char *str, size_t len, uint32_t value, return_status *st)
+    const char *str, size_t len, const void *value, return_status *st)
 {
 	char *n_label;
 	const char *r_label;
@@ -150,7 +156,6 @@ status_code ldh_radix_insert(ldh_radix **r,
 		(*r)->len = len;
 		ldh_radix_strncasecpy(n_label, str, len);
 		n_label[len] = 0;
-		(*r)->has_value = 1;
 		(*r)->value = value;
 		return STATUS_OK;
 	}
@@ -166,7 +171,6 @@ status_code ldh_radix_insert(ldh_radix **r,
 			break;
 	};
 	if (!len && !r_len) {
-		(*r)->has_value = 1;
 		(*r)->value = value;
 		return STATUS_OK;
 	}
@@ -190,7 +194,6 @@ status_code ldh_radix_insert(ldh_radix **r,
 		    &(*r)->edges[(toupper(*str) - '-') % LDH_N_EDGES],
 		    str, len, value, st);
 
-	n->has_value = 1;
 	n->value = value;
 	return STATUS_OK;
 }
@@ -314,20 +317,6 @@ status_code ldh_trie_walk(char *buf, size_t bufsz, ldh_trie *r,
 	return c;
 }
 
-static void p_del_free_str(
-    size_t depth, uint64_t number, const void *ptr, void *userarg)
-{
-	(void) depth; (void) number; (void) userarg;
-	free((char *)ptr);
-}
-
-static void p_del_free_branch(
-    size_t depth, uint64_t number, const void *ptr, void *userarg)
-{
-	(void) depth; (void) number; (void) userarg;
-	free((void *)ptr);
-}
-
 static status_code p_del_free_ldh_radix(
     char *str, ldh_radix *r, void *userarg, return_status *st)
 {
@@ -364,15 +353,15 @@ static inline void p_del_stanza_free(dnsextlang_stanza *s)
 		switch (f->ftype) {
 		case del_ftype_I1:
 			uint8_table_walk(f->symbols_by_int.I1,
-			    p_del_free_str, p_del_free_branch, NULL);
+			    uint_table_free, uint_table_free, NULL);
 			break;
 		case del_ftype_I2:
 			uint16_table_walk(f->symbols_by_int.I2,
-			    p_del_free_str, p_del_free_branch, NULL);
+			    uint_table_free, uint_table_free, NULL);
 			break;
 		case del_ftype_I4:
 			uint32_table_walk(f->symbols_by_int.I4,
-			    p_del_free_str, p_del_free_branch, NULL);
+			    uint_table_free, uint_table_free, NULL);
 			break;
 		default:
 			assert(f->ftype == del_ftype_I1
@@ -400,7 +389,7 @@ static inline status_code p_del_def_add_stanza(
 		return RETURN_INTERNAL_ERR(st,
 		    "dnsextlang_stanza had no name");
 
-	if (dnsextlang_lookup_(d, s->name, strlen(s->name), NULL))
+	if (dnsextlang_lookup__(d, s->name, strlen(s->name), NULL))
 		return RETURN_DATA_ERR(st,
 		    "stanza with name already exsist");
 
@@ -563,7 +552,7 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 			e++;
 		if (e < p->end && *e == '=') {
 			char numbuf[30] = "", *endptr;
-			long long int ll;
+			long long int ll, *ll_ptr;
 			status_code c;
 			char *symbol;
 
@@ -579,10 +568,15 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 			(void) memcpy(numbuf, eq + 1, e - (eq + 1));
 			numbuf[e - (eq + 1)] = 0;
 			ll = strtoll(numbuf, &endptr, 10);
+			if (!*numbuf || *endptr)
+				return RETURN_PARSE_ERR(st,
+				    "numeric field",
+				    p->fn, p->line_nr,
+				    p->col_nr + (eq + 1 - p->start));
+
 			if (!(symbol = p_del_strdup(s, eq)))
 				return RETURN_MEM_ERR(st,
 				    "could not duplicate symbolic field value");
-
 			switch (f->ftype) {
 			case del_ftype_I1:
 				if (ll > 255) {
@@ -641,15 +635,21 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 				    p->fn, p->line_nr,
 				    p->col_nr + (s - p->start));
 			}
+			if (!(ll_ptr = calloc(1, sizeof(ll)))) {
+				free(symbol);
+				return RETURN_MEM_ERR(st,
+				    "could not duplicate numeric field value");
+			}
+			*ll_ptr = ll;
 			if ((c = ldh_radix_insert(
-			    &f->symbols_by_ldh, s, eq - s, ll, st))) {
+			    &f->symbols_by_ldh, s, eq - s, ll_ptr, st))) {
+				free(ll_ptr);
 				free(symbol);
 				return RETURN_PARSE_ERR(st,
 				    "could not add symbol",
 				    p->fn, p->line_nr,
 				    p->col_nr + (s - p->start));
 			}
-
 		} else {
 			int q = p_lookup_qual(s, e);
 
@@ -1032,7 +1032,7 @@ void dnsextlang_def_free(dnsextlang_def *d)
 	if (!d)
 		return;
 	uint16_table_walk(d->stanzas_by_u16,
-	    p_del_free_stanza, p_del_free_branch, NULL);
+	    p_del_free_stanza, uint_table_free, NULL);
 	(void) LDH_WALK(
 	    NULL, 0, d->stanzas_by_ldh, p_del_free_ldh_cont, NULL, NULL);
 	free(d);

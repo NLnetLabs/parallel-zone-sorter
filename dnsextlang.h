@@ -51,8 +51,13 @@
 #endif
 #endif
 
+void uint_table_free(
+    size_t depth, uint64_t number, const void *ptr, void *userarg);
 
 typedef const void * uint8_table;
+
+static inline const void **uint8_table_lookup_(uint8_table *table, uint8_t value)
+{ return !table ? NULL : &table[value]; }
 
 static inline const void *uint8_table_lookup(uint8_table *table, uint8_t value)
 { return !table ? NULL : table[value]; }
@@ -66,6 +71,12 @@ typedef void (*uint_table_walk_func)(
 void uint8_table_walk(uint8_table *table,
     uint_table_walk_func leaf, uint_table_walk_func branch, void *userarg);
 
+static inline void uint8_table_free_(
+    uint8_table *table, uint_table_walk_func leaf, void *userarg)
+{ uint8_table_walk(table, leaf, uint_table_free, userarg); }
+
+static inline void uint8_table_free(uint8_table *table)
+{ uint8_table_walk(table, NULL, uint_table_free, NULL); }
 
 #define DEF_UINT_TABLE_DECL(HI,LO,UINT_T,MASK) \
 	typedef uint ## LO ## _table *uint ## HI ##_table; \
@@ -75,13 +86,26 @@ void uint8_table_walk(uint8_table *table,
 	{ return !table ? NULL : uint ## LO ## _table_lookup(\
 	    table[(value >> LO) & 0xFF], value & MASK); } \
 	\
+	static inline const void **uint ## HI ## _table_lookup_( \
+	    uint ## HI ## _table *table, UINT_T value) \
+	{ return !table ? NULL : uint ## LO ## _table_lookup_(\
+	    table[(value >> LO) & 0xFF], value & MASK); } \
+	\
 	status_code uint ## HI ## _table_add( \
 	    uint ## HI ## _table **table_r, UINT_T value, \
 	    const void *ptr, return_status *st); \
 	\
 	void uint ## HI ## _table_walk(uint ## HI ## _table *table, \
 	    uint_table_walk_func leaf, uint_table_walk_func branch, \
-	    void *userarg);
+	    void *userarg); \
+	\
+	static inline void uint ## HI ## _table_free_( \
+	    uint ## HI ## _table *t, uint_table_walk_func l, void *u) \
+	{ uint ## HI ## _table_walk(t, l, uint_table_free, u); } \
+	\
+	static inline void uint ## HI ## _table_free( \
+	    uint ## HI ## _table *table) \
+	{ uint ## HI ## _table_walk(table, NULL, uint_table_free, NULL); }
 
 DEF_UINT_TABLE_DECL(16,  8, uint16_t, 0xFF)
 DEF_UINT_TABLE_DECL(24, 16, uint32_t, 0xFFFFUL)
@@ -106,12 +130,11 @@ typedef struct ldh_radix ldh_radix;
 struct ldh_radix {
 	const char *label;
 	uint16_t    len;
-	uint8_t     has_value;
-	uint32_t    value;
+	const void *value;
 	ldh_radix  *edges[LDH_N_EDGES];
 };
 
-static inline uint32_t *ldh_radix_lookup(
+static inline const void *ldh_radix_lookup(
     ldh_radix *r, const char *str, size_t len)
 {
 	for (;;) {
@@ -120,14 +143,14 @@ static inline uint32_t *ldh_radix_lookup(
 			return NULL;
 		len -= r->len;
 		if (!len)
-			return r->has_value ? &r->value : NULL;
+			return r->value;
 		str += r->len;
 		r = r->edges[(toupper(*str) - '-') % LDH_N_EDGES];
 	}
 }
 
 status_code ldh_radix_insert(ldh_radix **r,
-    const char *str, size_t len, uint32_t value, return_status *st);
+    const char *str, size_t len, const void *value, return_status *st);
 
 typedef status_code (*ldh_radix_walk_func)(char *str, ldh_radix *r,
     void *userarg, return_status *st);
@@ -339,11 +362,11 @@ static inline int dnsextlang_get_type__(dnsextlang_def *def,
 		if ((r = LDH_LOOKUP(
 		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
 			return r->number;
-
+#if 0
 		if (def->fallback == dns_default_rrtypes)
 			return dnsextlang_get_type_(
 			    rrtype, rrtype_strlen, st);
-
+#endif
 		if (def->fallback)
 			return dnsextlang_get_type__(
 			    def->fallback, rrtype, rrtype_strlen, st);
@@ -371,10 +394,10 @@ static inline const dnsextlang_stanza *dnsextlang_lookup__(dnsextlang_def *def,
 		if ((r = LDH_LOOKUP(
 		    def->stanzas_by_ldh, rrtype, rrtype_strlen)))
 			return r;
-		
+#if 0
 		if (def->fallback == dns_default_rrtypes)
 			return dnsextlang_lookup_(rrtype, rrtype_strlen, st);
-
+#endif
 		if (def->fallback)
 			return dnsextlang_lookup__(
 			    def->fallback, rrtype, rrtype_strlen, st);

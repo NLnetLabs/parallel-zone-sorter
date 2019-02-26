@@ -135,6 +135,7 @@ static status_code p_print_ldh_radix(
 	size_t c;
 	char *prefix = (char *)userarg;
 	size_t pl = strlen(prefix);
+	char value[1024];
 
 	(void)userarg;
 	(void)st;
@@ -142,10 +143,26 @@ static status_code p_print_ldh_radix(
 	for (s = str; *s; s++)
 		if (*s == '-')
 			*s = '_';
-	printf( "static ldh_radix %s%s = { \"%.*s\", %d, %d, %"PRIu32",\n\t{"
+	if (!r->value)
+		strcpy(value, "NULL");
+
+	else if (*prefix == 't') {
+		const long long int *ll_ptr = r->value;
+
+		printf("static const long long int %s%s_ll = %lld;\n"
+		      , prefix, *str ? str : "ldh_radix", *ll_ptr);
+		(void) snprintf( value, sizeof(value), "&%s%s_ll"
+		               , prefix, *str ? str : "ldh_radix");
+	} else {
+		const dnsextlang_stanza *stanza = r->value;
+
+		(void) snprintf( value, sizeof(value), "&t%.4x"
+		               , stanza->number);
+	}
+	printf( "static ldh_radix %s%s = { \"%.*s\", %d, %s,\n\t{"
 	      , prefix, *str ? str : "ldh_radix"
 	      , (int)r->len, r->label, r->len
-	      , r->has_value, r->value);
+	      , value);
 	c = 9;
 	for (i = 0; i < 46; i++) {
 		ldh_radix *e;
@@ -400,7 +417,7 @@ static void p_export_stanza2c(size_t n, const dnsextlang_stanza *s)
 		}
 		printf("};\n");
 	}
-	printf("static dnsextlang_stanza t%.4zx = "
+	printf("static const dnsextlang_stanza t%.4zx = "
 	       "{\n\t\"%s\", %zu,", n, s->name, (size_t)s->number);
 	printf(" (");
 	not_first = 0;
@@ -435,7 +452,7 @@ static void p_print_stanza(
 	p_export_stanza2c(n, s);
 }
 
-static void p_print_table(
+static void p_print_stanza_table(
     size_t depth, uint64_t n, const void *table_, void *userarg)
 {
 	const void * const *table = table_;
@@ -482,7 +499,7 @@ status_code dnsextlang_export_def2c(dnsextlang_def *d, return_status *st)
 	printf("#include \"dnsextlang.h\"\n");
 
 	uint16_table_walk(
-	    d->stanzas_by_u16, p_print_stanza, p_print_table, NULL);
+	    d->stanzas_by_u16, p_print_stanza, p_print_stanza_table, NULL);
 	if ((c = LDH_WALK(buf, sizeof(buf), d->stanzas_by_ldh,
 	    P_PRINT_LDH_CONT, "rr_", NULL)))
 		return c;

@@ -17,10 +17,10 @@ SOA:6:A marks the start of a zone of authority [RFC1035]
    N[C]:primary Primary server name
    N[A]:mailbox Responsible mailbox
    I4:serial Serial number
-   I4:refresh Refresh time (seconds)
-   I4:retry Retry time (seconds)
-   I4:expire Expire time (seconds)
-   I4:minimum Minium time (seconds)
+   I4[P]:refresh Refresh time (seconds)
+   I4[P]:retry Retry time (seconds)
+   I4[P]:expire Expire time (seconds)
+   I4[P]:minimum Minium time (seconds)
 
 MB:7:AE a mailbox domain name (EXPERIMENTAL) [RFC1035]
    N[C]:host Host name

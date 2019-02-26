@@ -44,17 +44,22 @@ typedef struct presentation_dname {
 	int       malloced;
 } presentation_dname;
 
+typedef struct presentation_rr {
+	const char  *origin;
+	const char  *owner;
+	uint32_t     ttl;
+	uint16_t     rr_class;
+	parse_piece *rr_type;
+	parse_piece *end;
+} presentation_rr;
+
 typedef struct zonefile_iter {
 	parser             p;
 
+	uint32_t           TTL; /* from $TTL directives (or the default) */
 	presentation_dname origin;
 	presentation_dname owner;
-
-	uint32_t           TTL; /* from $TTL directives (or the default) */
-	uint32_t           ttl;
-	parse_piece       *rr_type;
-	uint16_t           rr_class;
-
+	presentation_rr    rr;
 	int                same_owner; /* owner same as with previous RR */
 } zonefile_iter;
 
