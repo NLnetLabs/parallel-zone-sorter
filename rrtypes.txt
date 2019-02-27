@@ -31,6 +31,9 @@ MG:8:AE a mail group member (EXPERIMENTAL) [RFC1035]
 MR:9:AE a mail rename domain name (EXPERIMENTAL) [RFC1035]
    N[A]:mailbox Mailbox name
 
+NULL:10:E a null RR (EXPERIMENTAL) [RFC1035]
+   X:anything Anything
+
 WKS:11:I a well known service description [RFC1035]
    A IPv4 address
    I1 Protocol number
@@ -121,11 +124,20 @@ NXT:30:AO Next Domain (OBSOLETE) [RFC3755][RFC2535]
    N[C]:next Domain
    Z[NXT]:rrtypes Bitmap of rrtypes
 
+EID:31:P Endpoint Identifier
+   X:identifier Endpoint identifier
+
+NIMLOC:32:P Nimrod Locator
+   X:locator Nimrod locator
+
 SRV:33:I Server Selection [1][RFC2782]
    I2:priority Priority
    I2:weight Weight
    I2:port Port
    N:target Target host name
+
+ATMA:34:P ATM Address
+   X:format Format
 
 NAPTR:35:I Naming Authority Pointer [RFC2915][RFC2168][RFC3403]
    I2:order Order
@@ -154,6 +166,15 @@ A6:38:IO A6 (OBSOLETE - use AAAA) [RFC3226][RFC2874][RFC6563]
 
 DNAME:39:A DNAME [RFC6672]
    N:source Source name
+
+SINK:40:P SINK 
+   I1:coding Coding
+   I2:subcoding Subcoding
+   B64:data Data
+
+OPT:41:W OPT [RFC6891][RFC3225]
+   I2[M]:code Option code
+   X[L]:data Option data
 
 APL:42:I APL [RFC3123]
    Z[APL]:prefixes Prefixes
@@ -188,11 +209,11 @@ RRSIG:46:A RRSIG [RFC4034][RFC3755]
    T:expire Signature expiration (timestamp)
    T:inception Signature inception (timestamp)
    I2:keytag Key tag
-   N:signer Signer's name
+   N[L]:signer Signer's name
    B64:signature Signature
 
 NSEC:47:A NSEC [RFC4034][RFC3755]
-   N:next Next domain name
+   N[L]:next Next domain name
    R[L]:types Type bitmaps (as window blocks)
 
 DNSKEY:48:A DNSKEY [RFC4034][RFC3755]
@@ -237,6 +258,19 @@ HIP:55:A Host Identity Protocol [RFC8005]
    Z[HIPPK]:pubkey Public Key
    N[O,M]:servers Rendezvous servers
 
+NINFO:56:P NINFO
+   S:status Status of zone
+
+RKEY:57:P RKEY
+   I2:flags Flags
+   I1:protocol Protocol
+   I1:algorithm Algorithm
+   B64:data Key data
+
+TALINK:58:P Trust Anchor LINK
+   N:previous Previous
+   N:next Next
+
 CDS:59:A Child DS [RFC7344]
    I2:keytag Key tag
    I1[RSAMD5=1,DH=2,DSA=3,ECC=4,RSASHA1=5,DSA-NSEC-SHA1=6,\
@@ -267,8 +301,16 @@ ZONEMD:63:A Message Digest for DNS Zones [draft-wessels-dns-zone-digest]
    I1:reserved Reserved
    X:digest Digest
 
-SPF:99:AO  [RFC7208]
+SPF:99:AO [RFC7208]
   S[M]:text SPF data
+
+UINFO:100:R [IANA-Reserved]
+
+UID:101:R [IANA-Reserved]
+
+GID:102:R [IANA-Reserved]
+
+UNSPEC:103:R [IANA-Reserved]
 
 NID:104:A  [RFC6742]
    I2:preference Preference
@@ -292,6 +334,20 @@ EUI48:108:A an EUI-48 address [RFC7043]
 EUI64:109:A an EUI-64 address [RFC7043]
    X8:address Address (digit pairs separated by hyphens)
 
+TKEY:249:W Transaction Key [RFC2930]
+
+TSIG:250:W Transaction Signature [RFC2845]
+
+IXFR:251:Q Incremental transfer [RFC1995]
+
+AXFR:252:Q Transfer of an entrire zone [RFC1035][RFC5936]
+
+MAILB:253:QE Mailbox-related RRs (MB, MG or MR) [RFC1035]
+
+MAILA:254:QO Mail agent RRs (OBSOLETE - see MX) [RFC1035]
+
+ANY:255:Q Some or all records the server has available
+
 URI:256:A URI [RFC7553]
    I2:priority Priority
    I2:weight Weight
@@ -301,6 +357,31 @@ CAA:257:A Certification Authority Restriction [RFC6844]
    I1:flags Flags
    S:tag Tag
    S[X]:value Value
+
+AVC:258:P Application Visibility and Control
+   S:meta_data Meta data
+
+DOA:259:D Digital Object Architecture [draft-durand-doa-over-dns]
+   I4:enterprise Enterprise
+   I4:type Type
+   I1:location Location
+   S:media_type Media type
+   B64:data Data
+
+AMTRELAY:260:D Automatic Multicast Tunneling Relay [draft-ietf-mboned-driad-amt-discovery]
+   I1:precedence Precedence
+   I1:relay_type Relay type
+   I1:discobery_optional Discovery Optional
+   Z[IPSECKEY]:relay Relay
+
+TA:32768:P DNSSEC Trust Authorities
+   I2:keytag Key tag
+   I1[RSAMD5=1,DH=2,DSA=3,ECC=4,RSASHA1=5,DSA-NSEC-SHA1=6,\
+    RSASHA1-NSEC3-SHA1=7,RSASHA256=8,RSASHA512=10,ECC-GOST=12,\
+    ECDSAP256SHA256=13,ECDSAP384SHA384=14,INDIRECT=252,\
+    PRIVATEDNS=253,PRIVATEOID=254]:algorithm Algorithm
+   I1[SHA-1=1,SHA-256=2,GOST=3,SHA-384=4]:digtype Digest type
+   X:digest Digest
 
 DLV:32769:A DNSSEC Lookaside Validation [RFC4431]
    I2:key Key tag

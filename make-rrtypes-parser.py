@@ -71,8 +71,8 @@ return NULL;
 """
 
 print """ 
-const dnsextlang_stanza *p_dnsextlang_lookup_(
-    const char *s, size_t len, return_status *st)
+static const dnsextlang_stanza *p_dnsextlang_lookup_(
+    const char *s, size_t len)
 {"""
 for ln in text.split('\n'):
 	print '\t' + ln
@@ -84,7 +84,7 @@ const dnsextlang_stanza *dnsextlang_lookup_(
 	const dnsextlang_stanza *r;
 	int t;
 	
-	if ((r = p_dnsextlang_lookup_(s, len, st)))
+	if ((r = p_dnsextlang_lookup_(s, len)))
 		return r;
 
 	if ((t = dnsextlang_get_TYPE_rrtype(s, len, st)) < 0)
@@ -101,7 +101,7 @@ int dnsextlang_get_type_(const char *s, size_t len, return_status *st)
 {
 	const dnsextlang_stanza *r;
 
-	if ((r = p_dnsextlang_lookup_(s, len, st)))
+	if ((r = p_dnsextlang_lookup_(s, len)))
 		return r->number;
 
 	return dnsextlang_get_TYPE_rrtype(s, len, st);
