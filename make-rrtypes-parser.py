@@ -34,7 +34,7 @@ def make_switch(i, names, indent):
 			       % ( i, names[0][0], ' ' * indent, names[0][1])
 
 		s = ('s + %d' % i) if i else 's'
-		return ( 'if (strncmp(%s, "%s", %d)) break;\n%s'
+		return ( 'if (strncasecmp(%s, "%s", %d)) break;\n%s'
 		       + "return &t%.4x;" ) \
 		       % ( s, names[0][0], len(names[0][0])
 		         , ' ' * indent, names[0][1])

@@ -88,23 +88,15 @@ typedef struct parser {
 	int          pieces_malloced;
 } parser;
 
-#define PARSER_CLEAR          { .text = NULL     , .end  = NULL          \
-                              , .cur = NULL      , .fd = -1, .fn = NULL  \
-                              , .line_nr = 0     , .sol  = NULL          \
-                              , .to_munmap = NULL, .munmap_treshold = 0  \
-                                                 , .munmap_preserve = 0  \
-                              , .start = NULL    , .refs = NULL          \
-                              , .pieces = NULL   , .end_of_pieces = NULL \
-                              , .cur_piece = NULL, .pieces_malloced = 0  }
+#define PARSER_CLEAR          { NULL, NULL, NULL \
+                              ,   -1, NULL,    0, NULL \
+                              , NULL, 0, 0, NULL, NULL \
+                              , NULL, NULL, NULL, 0 }
 
-#define PARSER_INIT(TEXT,LEN) { .text = (TEXT)   , .end = ((TEXT)+(LEN)) \
-                              , .cur = (TEXT)    , .fd = -1, .fn = NULL  \
-                              , .line_nr = 0     , .sol = (TEXT)         \
-                              , .to_munmap = NULL, .munmap_treshold = 0  \
-                                                 , .munmap_preserve = 0  \
-                              , .start = NULL    , .refs = NULL          \
-                              , .pieces = NULL   , .end_of_pieces = NULL \
-                              , .cur_piece = NULL, .pieces_malloced = 0  }
+#define PARSER_INIT(TEXT,LEN) { (TEXT), ((TEXT)+(LEN)), (TEXT) \
+                              ,   -1, NULL,    0, (TEXT) \
+                              , NULL, 0, 0, NULL, NULL \
+                              , NULL, NULL, NULL, 0 }
 
 struct parse_piece {
 	const char *start;
@@ -156,7 +148,7 @@ static inline status_code parser_init_fn(
 		    "determening file size with which to initialize parser");
 	}
 	if ((text = mmap( NULL, statbuf.st_size, PROT_READ
-	                , MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+	                , MAP_SHARED, fd, 0)) == MAP_FAILED) {
 		close(fd);
 		return RETURN_IO_ERR(st,
 		    "mmapping the file with which to initialize parser");
@@ -213,7 +205,6 @@ static inline status_code parser_progressive_munmap(
 	else
 		return STATUS_OK; /* parsing has not yet started */
 
-	assert(n_to_munmap >= 0);
 	if (n_to_munmap < 0)
 		return RETURN_DATA_ERR(st,
 		    "p->to_munmap progressed beyond referenced text");
@@ -354,16 +345,16 @@ static inline status_code parser_up_ref(
 		return RETURN_DATA_ERR(st,
 		    "cannot add an already added reference");
 
-	refs = &p->refs;
-	for (;;) {
-		if (!*refs || r->text < (*refs)->text) {
-			r->next = *refs;
-			r->prev =  refs;
-			*refs =  r;
-			return STATUS_OK;
+	for (refs = &p->refs; *refs; refs = &(*refs)->next) {
+		if (r->text < (*refs)->text) {
+			(*refs)->prev = &r->next;
+			break;
 		}
-		refs = &(*refs)->next;
 	}
+	r->next = *refs;
+	r->prev =  refs;
+	*refs = r;
+	return STATUS_OK;
 }
 
 #endif /* #ifndef PARSER_H_ */
