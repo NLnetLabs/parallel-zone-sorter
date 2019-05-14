@@ -32,8 +32,8 @@
 
 #ifndef DNSEXTLANG_H_
 #define DNSEXTLANG_H_
-#include "return_status.h"
 #include "dns_config.h"
+#include "return_status.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>

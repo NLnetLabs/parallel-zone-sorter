@@ -36,7 +36,7 @@
 
 typedef status_code (*process_rrs_func)(
     presentation_rr *rrs, presentation_rr *end_of_rrs,
-    size_t n_worker, void *userarg, return_status *st);
+    size_t n_worker, void *userarg, float progress, return_status *st);
 
 status_code zonefile_process_rrs_fn_(
     dns_config *cfg, const char *fn, size_t n_workers,

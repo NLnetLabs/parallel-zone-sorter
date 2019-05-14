@@ -30,7 +30,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include "dnsextlang.h"
-#include "parser.h"
+#include "mem_parser.h"
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -565,6 +565,12 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 			while (e < p->end && isdigit(*e))
 				e++;
 			assert(e > (eq + 1));
+			if (e - (eq + 1) >= (int)sizeof(numbuf))
+				return RETURN_PARSE_ERR(st,
+				    "numeric field",
+				    p->fn, p->line_nr,
+				    p->col_nr + (eq + 1 - p->start));
+
 			(void) memcpy(numbuf, eq + 1, e - (eq + 1));
 			numbuf[e - (eq + 1)] = 0;
 			ll = strtoll(numbuf, &endptr, 10);
@@ -613,7 +619,7 @@ static inline status_code p_del_parse_quals(dnsextlang_field *f,
 				break;
 
 			case del_ftype_I4:
-				if (ll > 4294967295UL)
+				if (ll > 4294967295)
 					return RETURN_PARSE_ERR(st,
 					    "I4 field value must be "
 					    "< 4294967296", p->fn, p->line_nr,
@@ -739,7 +745,7 @@ dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(
 		    "stanza number missing", piece->fn, piece->line_nr,
 		    piece->col_nr + (s - piece->start)));
 
-	if (e - s > sizeof(numbuf) - 1)
+	if (e - s > (int)sizeof(numbuf) - 1)
 		return p_err(r, RETURN_PARSE_ERR(st,
 		    "stanza number too large", piece->fn, piece->line_nr,
 		    piece->col_nr + (s - piece->start)));
@@ -830,11 +836,11 @@ dnsextlang_stanza *dnsextlang_stanza_new_from_pieces(
 	return r;
 }
 
-static inline parser *p_dfi_return(parser *p, return_status *st)
+static inline mem_parser *p_dfi_return(mem_parser *p, return_status *st)
 {
 	if (p->cur_piece == p->pieces && !p->cur_piece->start) {
 		assert(p->cur == p->end);
-		parser_free_in_use(p);
+		mem_parser_free_in_use(p);
 		return NULL; /* End of text to parse */
 	}
 	if (p->cur_piece->start && !p->cur_piece->end) {
@@ -844,10 +850,10 @@ static inline parser *p_dfi_return(parser *p, return_status *st)
 	}
 	assert(p->pieces->start);
 	p->start = p->pieces->start;
-	return parser_progressive_munmap(p, st) ? NULL : p;
+	return mem_parser_progressive_munmap(p, st) ? NULL : p;
 }
 
-static inline parser *p_dfi_get_fields(parser *p, return_status *st)
+static inline mem_parser *p_dfi_get_fields(mem_parser *p, return_status *st)
 {
 	while (p->cur < p->end) {
 		p->sol = p->cur;
@@ -905,7 +911,7 @@ static inline parser *p_dfi_get_fields(parser *p, return_status *st)
 	return p_dfi_return(p, st);
 }
 
-static inline parser *p_dfi_next(parser *p, return_status *st)
+static inline mem_parser *p_dfi_next(mem_parser *p, return_status *st)
 {
 	if (reset_cur_piece(p, st))
 		return NULL;
@@ -968,19 +974,21 @@ static inline parser *p_dfi_next(parser *p, return_status *st)
 	return p_dfi_return(p, st);
 }
 
-dnsextlang_def *p_dfi2def(dns_config *cfg, parser *i, return_status *st)
+static
+dnsextlang_def *p_dfi2def(dns_config *cfg, mem_parser *i, return_status *st)
 {
 	dnsextlang_def *d = calloc(1, sizeof(dnsextlang_def));
-	parser *j = i;
-	return_status my_st = RETURN_STATUS_CLEAR;
+	mem_parser *j = i;
+	return_status my_st;
 
+	return_status_reset(&my_st);
 	if (!st)
 		st = &my_st;
 
 	if (!d) {
 		(void) RETURN_MEM_ERR(st,
 		    "cannot allocate space for dnsextlang definitions");
-		parser_free_in_use(j);
+		mem_parser_free_in_use(j);
 		return NULL;
 	}
 
@@ -995,28 +1003,29 @@ dnsextlang_def *p_dfi2def(dns_config *cfg, parser *i, return_status *st)
 			break;
 	}
 	if (i || st->code)
-		parser_free_in_use(j);
+		mem_parser_free_in_use(j);
 
 	if (st->code) {
 		dnsextlang_def_free(d);
 		return NULL;
 	}
+	d->fallback = cfg->rrtypes;
 	return d;
 }
 
 dnsextlang_def *dnsextlang_def_new_from_text_(
     dns_config *cfg, const char *text, size_t text_len, return_status *st)
 {
-	parser p;
-	return parser_init(&p, text, text_len, st)
+	mem_parser p;
+	return mem_parser_init(&p, text, text_len, st)
 	     ? NULL : p_dfi2def(cfg, &p, st);
 }
 
 dnsextlang_def *dnsextlang_def_new_from_fn_(
     dns_config *cfg, const char *fn, return_status *st)
 {
-	parser p;
-	return parser_init_fn(&p, fn, st) ? NULL : p_dfi2def(cfg, &p, st);
+	mem_parser p;
+	return mem_parser_init_fn(&p, fn, st) ? NULL : p_dfi2def(cfg, &p, st);
 }
 
 static void p_del_free_stanza(
@@ -1028,7 +1037,6 @@ static void p_del_free_stanza(
 
 void dnsextlang_def_free(dnsextlang_def *d)
 {
-	/* TODO: implement */
 	if (!d)
 		return;
 	uint16_table_walk(d->stanzas_by_u16,

@@ -42,11 +42,12 @@ typedef struct worker_data {
 
 status_code process_rrs(
     presentation_rr *rr, presentation_rr *end_of_rrs,
-    size_t n_worker, void *userarg, return_status *st)
+    size_t n_worker, void *userarg, float progress, return_status *st)
 {
 	worker_data *wd = (worker_data *)userarg + n_worker;
 	const void **ttl_count_ptr;
 	(void)st;
+	(void)progress;
 
 	wd->n_rrs += end_of_rrs - rr;
 	while (rr < end_of_rrs) {

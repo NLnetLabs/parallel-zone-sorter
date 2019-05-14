@@ -30,8 +30,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef PARSER_H_ 
-#define PARSER_H_
+#ifndef MEM_PARSER_H_ 
+#define MEM_PARSER_H_
 #include "return_status.h"
 #include <fcntl.h>
 #include <stddef.h>
@@ -61,7 +61,7 @@
 typedef struct parse_piece parse_piece;
 typedef struct parse_ref   parse_reference;
 typedef struct parse_ref   parse_ref;
-typedef struct parser {
+typedef struct mem_parser {
 	const char  *text;
 	const char  *end;
 	const char  *cur;
@@ -86,17 +86,17 @@ typedef struct parser {
 	parse_piece *end_of_pieces;
 	parse_piece *cur_piece;
 	int          pieces_malloced;
-} parser;
+} mem_parser;
 
-#define PARSER_CLEAR          { NULL, NULL, NULL \
-                              ,   -1, NULL,    0, NULL \
-                              , NULL, 0, 0, NULL, NULL \
-                              , NULL, NULL, NULL, 0 }
+#define MEM_PARSER_CLEAR          { NULL, NULL, NULL \
+                                   ,   -1, NULL,    0, NULL \
+                                   , NULL, 0, 0, NULL, NULL \
+                                   , NULL, NULL, NULL, 0 }
 
-#define PARSER_INIT(TEXT,LEN) { (TEXT), ((TEXT)+(LEN)), (TEXT) \
-                              ,   -1, NULL,    0, (TEXT) \
-                              , NULL, 0, 0, NULL, NULL \
-                              , NULL, NULL, NULL, 0 }
+#define MEM_PARSER_INIT(TEXT,LEN) { (TEXT), ((TEXT)+(LEN)), (TEXT) \
+                                   ,   -1, NULL,    0, (TEXT) \
+                                   , NULL, 0, 0, NULL, NULL \
+                                   , NULL, NULL, NULL, 0 }
 
 struct parse_piece {
 	const char *start;
@@ -112,7 +112,7 @@ struct parse_ref {
 	parse_ref **prev;
 };
 
-static inline status_code parser_init(parser *p,
+static inline status_code mem_parser_init(mem_parser *p,
     const char *text, size_t len, return_status *st)
 {
 	if (!p)
@@ -121,12 +121,12 @@ static inline status_code parser_init(parser *p,
 	if (len && !text)
 		return RETURN_USAGE_ERR(st,
 		    "missing text to initialize parser");
-	*p = (parser)PARSER_INIT(text, len);
+	*p = (mem_parser)MEM_PARSER_INIT(text, len);
 	return STATUS_OK;
 }
 
-static inline status_code parser_init_fn(
-    parser *p, const char *fn, return_status *st)
+static inline status_code mem_parser_init_fn(
+    mem_parser *p, const char *fn, return_status *st)
 {
 	int fd;
 	struct stat statbuf;
@@ -153,7 +153,7 @@ static inline status_code parser_init_fn(
 		return RETURN_IO_ERR(st,
 		    "mmapping the file with which to initialize parser");
 	}
-	*p = (parser)PARSER_INIT(text, statbuf.st_size);
+	*p = (mem_parser)MEM_PARSER_INIT(text, statbuf.st_size);
 	p->fd = fd; p->fn = fn; p->to_munmap = text;
 	p->munmap_treshold = DEFAULT_PARSER_MUNMAP_TRESHOLD
 	                   * DEFAULT_PARSER_PAGESIZE;
@@ -162,7 +162,7 @@ static inline status_code parser_init_fn(
 	return STATUS_OK;
 }
 
-static inline void parser_free_in_use(parser *p)
+static inline void mem_parser_free_in_use(mem_parser *p)
 {
 	if (!p)
 		return;
@@ -185,8 +185,8 @@ static inline void parser_free_in_use(parser *p)
 }
 
 /* Progressively munmap mmapped text that is not referenced (anymore) */
-static inline status_code parser_progressive_munmap(
-    parser *p, return_status *st)
+static inline status_code mem_parser_progressive_munmap(
+    mem_parser *p, return_status *st)
 {
 	ssize_t n_to_munmap;
 
@@ -209,7 +209,8 @@ static inline status_code parser_progressive_munmap(
 		return RETURN_DATA_ERR(st,
 		    "p->to_munmap progressed beyond referenced text");
 
-	if (n_to_munmap < p->munmap_treshold)
+	assert(n_to_munmap >= 0);
+	if ((size_t)n_to_munmap < p->munmap_treshold)
 		return STATUS_OK;
 
 	n_to_munmap /= p->munmap_treshold;
@@ -225,7 +226,7 @@ static inline status_code parser_progressive_munmap(
 }
 
 /* To do before parsing each set of pieces */
-static inline status_code reset_cur_piece(parser *p, return_status *st)
+static inline status_code reset_cur_piece(mem_parser *p, return_status *st)
 {
 	if (!p)
 		return RETURN_USAGE_ERR(st,
@@ -243,7 +244,7 @@ static inline status_code reset_cur_piece(parser *p, return_status *st)
 	return STATUS_OK;
 }
 
-static inline status_code equip_cur_piece(parser *p, return_status *st)
+static inline status_code equip_cur_piece(mem_parser *p, return_status *st)
 {
 	if (!p)
 		return RETURN_USAGE_ERR(st,
@@ -264,7 +265,7 @@ static inline status_code equip_cur_piece(parser *p, return_status *st)
 	return STATUS_OK;
 }
 
-static inline status_code increment_cur_piece(parser *p, return_status *st)
+static inline status_code increment_cur_piece(mem_parser *p, return_status *st)
 {
 	if (!p)
 		return RETURN_USAGE_ERR(st,
@@ -325,8 +326,8 @@ static inline status_code parse_dereference(parse_ref *r, return_status *st)
 	return STATUS_OK;
 }
 
-static inline status_code parser_up_ref(
-    parser *p, parse_ref *r, return_status *st)
+static inline status_code mem_parser_up_ref(
+    mem_parser *p, parse_ref *r, return_status *st)
 {
 	parse_ref **refs;
 
@@ -357,4 +358,4 @@ static inline status_code parser_up_ref(
 	return STATUS_OK;
 }
 
-#endif /* #ifndef PARSER_H_ */
+#endif /* #ifndef MEM_PARSER_H_ */

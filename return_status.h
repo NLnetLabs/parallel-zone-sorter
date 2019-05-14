@@ -49,15 +49,18 @@ typedef enum status_code {
 	STATUS_NOT_FOUND_ERR  =  8, /* Could not find requested item      */
 	STATUS_STOP_ITERATION =  9, /* Iterator reached last element */
 	STATUS_PTHREAD_ERR    = 10, /* A pthread func erred */
+	STATUS_NOT_IMPL_ERR   = 11, /* Requested feature not yet implemented */
 } status_code;
 
 static inline const char *status_code2str(status_code code)
 {
 	const char *error_strings[] = {
 		"NO", "I/O", "memory", "parse", "library usage",
-		"data integrity", "internal", "overflow"
+		"data integrity", "internal", "overflow", "not found",
+		"stop iteration", "pthread", "not implemented"
 	};
-	if (code >= STATUS_OK && code <= STATUS_OVERFLOW_ERR)
+	if (code >= STATUS_OK
+	&&  code <  sizeof(error_strings) / sizeof(*error_strings))
 		return error_strings[code];
 	else	return "Unknown error";
 }
@@ -69,7 +72,7 @@ typedef struct parse_error_details {
 } parse_error_details;
 
 typedef struct pthread_error_details {
-	int  errno;
+	int  err;
 } pthread_error_details;
 
 typedef struct return_status {
@@ -144,7 +147,7 @@ static inline int fprint_return_status(FILE *f, return_status *stat)
     )
 #define RETURN_PTHREAD_ERR(STAT, MSG, ERRNO) ( \
       (intptr_t)(STAT ) != (uintptr_t)NULL \
-    ? ( ((STAT)->details.pthread.errno = (ERRNO)) \
+    ? ( ((STAT)->details.pthread.err = (ERRNO)) \
       , RETURN_ERR(PARSE, (STAT), (MSG))) \
     : STATUS_PTHREAD_ERR \
     )
@@ -156,5 +159,6 @@ static inline int fprint_return_status(FILE *f, return_status *stat)
 #define RETURN_INTERNAL_ERR(...)  RETURN_ERR(INTERNAL , __VA_ARGS__)
 #define RETURN_OVERFLOW_ERR(...)  RETURN_ERR(OVERFLOW , __VA_ARGS__)
 #define RETURN_NOT_FOUND_ERR(...) RETURN_ERR(NOT_FOUND, __VA_ARGS__)
+#define RETURN_NOT_IMPL_ERR(...)  RETURN_ERR(NOT_IMPL , __VA_ARGS__)
 
 #endif /* #ifndef RETURN_STATUS_H_ */

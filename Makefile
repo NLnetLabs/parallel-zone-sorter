@@ -1,8 +1,8 @@
 CC=gcc
 #CFLAGS=-Wall -Wpedantic -Werror -pg -Ofast -DUSE_LDH_TRIE
 #CFLAGS=-Wall -Wpedantic -Werror -pg -g -DUSE_LDH_TRIE
-#CFLAGS=-Wall -Wpedantic -Werror -Ofast
-CFLAGS=-Wall -Wpedantic -Werror -pg -g
+CFLAGS=-Wall -Wpedantic -Werror -Ofast
+#CFLAGS=-Wall -Wpedantic -Werror -pg -g
 LDFLAGS=-pg
 PROGRAMS=zc rrtypes2c
 SORT_ZONE_OBJS=sort-zone.o

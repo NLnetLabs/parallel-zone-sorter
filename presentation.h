@@ -32,21 +32,22 @@
 
 #ifndef PRESENTATION_H_
 #define PRESENTATION_H_
-#include "parser.h"
-#include "return_status.h"
+#include "mem_parser.h"
 #include "dns_config.h"
 
 typedef struct presentation_dname {
-	parse_ref r;
-	size_t    len;
-	char     *spc;
-	size_t    spc_sz;
-	int       malloced;
+	parse_ref   r;
+	const char *end;
+	char       *spc;
+	size_t      spc_sz;
+	int         malloced;
 } presentation_dname;
 
 typedef struct presentation_rr {
 	const char  *origin;
+	const char  *origin_end;
 	const char  *owner;
+	const char  *owner_end;
 	uint32_t     ttl;
 	uint16_t     rr_class;
 	parse_piece *rr_type;
@@ -54,13 +55,15 @@ typedef struct presentation_rr {
 } presentation_rr;
 
 typedef struct zonefile_iter {
-	parser             p;
+	mem_parser         p;
 
 	uint32_t           TTL; /* from $TTL directives (or the default) */
 	presentation_dname origin;
 	presentation_dname owner;
-	presentation_rr    rr;
-	int                same_owner; /* owner same as with previous RR */
+
+	uint32_t           ttl;
+	uint16_t           rr_class;
+	parse_piece       *rr_type;
 } zonefile_iter;
 
 status_code zonefile_iter_init_text_(dns_config *cfg,zonefile_iter *i,

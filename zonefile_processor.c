@@ -33,7 +33,6 @@
 #include <pthread.h>
 #include <assert.h>
 
-
 typedef struct zonefile_worker zonefile_worker;
 typedef struct zonefile_processor {
 	pthread_mutex_t     mutex;
@@ -50,16 +49,16 @@ typedef struct zonefile_processor {
 #endif
 
 struct zonefile_worker {
-	pthread_t              thread;
+	pthread_t           thread;
 	zonefile_processor *mzp;
 
-	presentation_rr        rrs[ZONEFILE_WORKER_N_RRS];
-	parse_piece            pieces[ZONEFILE_WORKER_N_RRS * 4];
-	return_status          st;
-	parse_ref              ref;
-	char                  *origin_to_free;
-	char                  *owner_to_free;
-	int                    have_lock;
+	presentation_rr     rrs[ZONEFILE_WORKER_N_RRS];
+	parse_piece         pieces[ZONEFILE_WORKER_N_RRS * 4];
+	return_status       st;
+	parse_ref           ref;
+	char               *origin_to_free;
+	char               *owner_to_free;
+	int                 have_lock;
 };
 
 static inline void *werr(zonefile_worker *w)
@@ -81,29 +80,31 @@ static inline void *werr(zonefile_worker *w)
 
 void *zonefile_worker_start(void *worker)
 {
-	char                   origin_spc[1024], *origin = origin_spc;
-	size_t                 origin_len = sizeof(origin_spc);
-	char                   owner_spc[1024], *owner = owner_spc;
-	size_t                 owner_len = sizeof(owner_spc);
+	char               origin_spc[1024] = "", *origin = origin_spc;
+	size_t             origin_len = sizeof(origin_spc);
+	char               owner_spc[1024] = "", *owner = owner_spc;
+	size_t             owner_len = sizeof(owner_spc);
 	zonefile_worker    *w       = (zonefile_worker *)worker;
 	zonefile_processor *mzp     = w->mzp;
 
-	pthread_mutex_t       *mutex   = &mzp->mutex;
-	zonefile_iter         *zi      = &mzp->zi;
-	process_rrs_func       process =  mzp->process;
-	size_t               n_worker  =  w - w->mzp->workers;
-	void                  *userarg =  mzp->userarg;
+	pthread_mutex_t    *mutex   = &mzp->mutex;
+	zonefile_iter      *zi      = &mzp->zi;
+	process_rrs_func    process =  mzp->process;
+	size_t            n_worker  =  w - w->mzp->workers;
+	void               *userarg =  mzp->userarg;
 
-	presentation_rr              *rrs = w->rrs, *cur_rr;
-	presentation_rr              *end_of_rrs = rrs + sizeof( w->rrs)
-	                                        / sizeof(*w->rrs);
-	parse_piece           *pieces = w->pieces;
-	parse_piece           *end_of_piece = pieces + sizeof( w->pieces)
-	                                             / sizeof(*w->pieces);
-	int                    pc;
-	status_code            sc, prc;
-	return_status         *st = &w->st, prst;
-	parse_ref             *ref = &w->ref;
+	presentation_rr    *rrs = w->rrs, *cur_rr;
+	presentation_rr    *end_of_rrs = rrs + sizeof( w->rrs)
+	                                     / sizeof(*w->rrs);
+	parse_piece        *pieces = w->pieces;
+	parse_piece        *end_of_piece = pieces + sizeof( w->pieces)
+	                                          / sizeof(*w->pieces);
+	int                 pc;
+	status_code         sc, prc;
+	return_status      *st = &w->st, prst;
+	parse_ref          *ref = &w->ref;
+
+	float               text_sz = zi->p.end - zi->p.text;
 
 	(void) pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
@@ -123,8 +124,11 @@ void *zonefile_worker_start(void *worker)
 			break;
 		}
 		if (zi->owner.r.text) {
-			if (zi->owner.len > owner_len) {
-				owner_len = (zi->owner.len / 1024 + 1) * 1024;
+			size_t zi_owner_len
+			    = zi->owner.end - zi->owner.r.text;
+
+			if (zi_owner_len > owner_len) {
+				owner_len = (zi_owner_len / 1024 + 1) * 1024;
 				if (!(owner = malloc(owner_len)))
 					return RETURN_MEM_ERR(st,
 					    "allocating owner space"), werr(w);
@@ -132,16 +136,21 @@ void *zonefile_worker_start(void *worker)
 				w->owner_to_free = owner;
 			}
 			(void) memcpy(
-			    owner, zi->owner.r.text, zi->owner.len);
+			    owner, zi->owner.r.text, zi_owner_len);
+			owner[zi_owner_len] = 0;
 			if (zi->owner.r.prev)
 				(void) parse_dereference(&zi->owner.r, NULL);
 		} else
 			*owner = 0;
 		zi->owner.r.text = owner;
+		zi->owner.end = strchr(owner, 0);
 
 		if (zi->origin.r.text) {
-			if (zi->origin.len > origin_len) {
-				origin_len = (zi->origin.len / 1024 + 1) * 1024;
+			size_t zi_origin_len
+			    = zi->origin.end - zi->origin.r.text;
+
+			if (zi_origin_len > origin_len) {
+				origin_len = (zi_origin_len / 1024 + 1) * 1024;
 				if (!(origin = malloc(origin_len)))
 					return RETURN_MEM_ERR(st,
 					    "allocating origin space"), werr(w);
@@ -149,15 +158,17 @@ void *zonefile_worker_start(void *worker)
 				w->origin_to_free = origin;
 			}
 			(void) memcpy(
-			    origin, zi->origin.r.text, zi->origin.len);
+			    origin, zi->origin.r.text, zi_origin_len);
+			origin[zi_origin_len] = 0;
 			if (zi->origin.r.prev)
 				(void) parse_dereference(&zi->origin.r, NULL);
 		} else
 			*origin = 0;
 		zi->origin.r.text = origin;
+		zi->origin.end = strchr(origin, 0);
 
 		ref->text = zi->p.cur;
-		if ((sc = parser_up_ref(&zi->p, ref, st)))
+		if ((sc = mem_parser_up_ref(&zi->p, ref, st)))
 			return werr(w);
 
 		zi->p.pieces        = pieces;
@@ -169,7 +180,16 @@ void *zonefile_worker_start(void *worker)
 			if ((sc = zonefile_iter_next_(zi, st)))
 				break;
 
-			*cur_rr++ = zi->rr;
+			cur_rr->origin     = zi->origin.r.text;
+			cur_rr->origin_end = zi->origin.end;
+			cur_rr->owner      = zi->owner.r.text;
+			cur_rr->owner_end  = zi->owner.end;
+			cur_rr->ttl        = zi->ttl;
+			cur_rr->rr_class   = zi->rr_class;
+			cur_rr->rr_type    = zi->rr_type;
+			cur_rr->end        = zi->p.cur_piece;
+
+			cur_rr += 1;
 			zi->p.pieces = zi->p.cur_piece;
 		}
 		if (sc == STATUS_OVERFLOW_ERR) {
@@ -185,7 +205,8 @@ void *zonefile_worker_start(void *worker)
 			return RETURN_PTHREAD_ERR(st,
 			   "unlocking zonefile processor lock", pc), werr(w);
 		w->have_lock = 0;
-		prc = process(rrs, cur_rr, n_worker, userarg, &prst);
+		prc = process(rrs, cur_rr, n_worker, userarg, !zi->p.cur ? 1
+		    : (float)(zi->p.cur - zi->p.text) / text_sz, &prst);
 		if (prc) {
 			*st = prst;
 			return werr(w);
@@ -223,6 +244,10 @@ status_code zonefile_process_rrs_fn_(
 	if (mzp.zi.origin.malloced) {
 		free(mzp.zi.origin.spc);
 		(void) memset(&mzp.zi.origin, 0, sizeof(mzp.zi.origin));
+		if (cfg && cfg->default_origin) {
+			mzp.zi.origin.r.text = cfg->default_origin;
+			mzp.zi.origin.end = strchr(cfg->default_origin, 0);
+		}
 	}
 	mzp.process = process_func;
 	mzp.userarg = userarg;
