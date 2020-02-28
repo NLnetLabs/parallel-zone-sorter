@@ -34,5 +34,5 @@ zc.o: zc.c \
 	zonefile_processor.c zonefile_processor.h \
 	presentation.c presentation.h \
 	dnsextlang.c dnsextlang.h \
-	return_status.h parser.h
+	return_status.h mem_parser.h
 rrtypes2c.o: rrtypes2c.c dnsextlang.h
