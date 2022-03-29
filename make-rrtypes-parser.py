@@ -3,7 +3,7 @@
 n_by_name = dict()
 def get_len_names():
 	sz = 0
-	with file('rrtypes.order') as f:
+	with open('rrtypes.order') as f:
 		names = list()
 		for ln in f:
 			name, number = ln.strip().split()
@@ -57,7 +57,7 @@ def make_switch(i, names, indent):
 	#ret += 'default : break;'
 	#ret += '\n' + ' ' * indent
 	ret += '};\n' + ' ' * indent
-       	ret += 'break;'
+	ret += 'break;'
 	return ret
 		
 
@@ -70,13 +70,13 @@ text += """
 return NULL;
 """
 
-print """ 
+print(""" 
 static const dnsextlang_stanza *p_dnsextlang_lookup_(
     const char *s, size_t len)
-{"""
+{""")
 for ln in text.split('\n'):
-	print '\t' + ln
-print """}
+	print('\t' + ln)
+print("""}
 
 const dnsextlang_stanza *dnsextlang_lookup_(
     const char *s, size_t len, return_status *st)
@@ -106,5 +106,5 @@ int dnsextlang_get_type_(const char *s, size_t len, return_status *st)
 
 	return dnsextlang_get_TYPE_rrtype(s, len, st);
 }
-"""
+""")
 
